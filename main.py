@@ -9,10 +9,10 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTreeWidget, QTreeWidgetItem,
-    QTabWidget, QTabBar, QSplitter, QFileDialog, QPlainTextEdit,
-    QSystemTrayIcon, QMenu,
+    QTabBar, QSplitter, QFileDialog, QPlainTextEdit,
+    QSystemTrayIcon, QMenu, QStackedWidget,
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QUrl, QSettings
+from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize
 from PySide6.QtGui import QColor, QPalette, QIcon, QAction
 
 try:
@@ -67,10 +67,9 @@ QSplitter::handle:horizontal { background: #30363d; width: 1px; }
 QSplitter::handle:vertical   { background: #30363d; height: 1px; }
 
 /* ── Tab widget ── */
-QTabWidget::pane {
-    border: none;
-    border-top: 1px solid #30363d;
+#folderTabsHeader {
     background: #0d1117;
+    border-bottom: 1px solid #30363d;
 }
 QTabBar { background: #0d1117; }
 QTabBar::tab {
@@ -631,6 +630,22 @@ class FolderTree(QTreeWidget):
 
 # ── FolderTabsPanel ───────────────────────────────────────────────────────────
 
+_ADD_FOLDER_TAB = "__add_folder_tab__"
+
+
+class FolderTabBar(QTabBar):
+    def tabSizeHint(self, index: int) -> QSize:
+        size = super().tabSizeHint(index)
+        if self.tabData(index) == _ADD_FOLDER_TAB:
+            size.setWidth(42)
+        return size
+
+    def minimumSizeHint(self) -> QSize:
+        size = super().minimumSizeHint()
+        size.setWidth(0)
+        return size
+
+
 class FolderTabsPanel(QWidget):
     """左侧多文件夹标签页面板。"""
 
@@ -643,20 +658,86 @@ class FolderTabsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.tabs = QTabWidget()
-        self.tabs.setMovable(True)
-        self.tabs.setTabsClosable(False)   # 使用自定义关闭按钮
-        self.tabs.setDocumentMode(True)
-        self.tabs.tabBar().setExpanding(False)
+        header = QWidget()
+        header.setObjectName("folderTabsHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
 
-        add_btn = QPushButton("+")
-        add_btn.setObjectName("addFolderBtn")
-        add_btn.setToolTip("添加文件夹 (Ctrl+O)")
-        add_btn.clicked.connect(self.add_folder)
-        self.tabs.setCornerWidget(add_btn, Qt.Corner.TopRightCorner)
+        self.tab_bar = FolderTabBar()
+        self.tab_bar.setMovable(True)
+        self.tab_bar.setDocumentMode(True)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setUsesScrollButtons(False)
+        self.tab_bar.currentChanged.connect(self._on_current_changed)
+        self.tab_bar.tabBarClicked.connect(self._on_tab_clicked)
+        self.tab_bar.tabMoved.connect(self._on_tab_moved)
+        self.tab_bar.setMinimumWidth(0)
+        header_layout.addWidget(self.tab_bar, 1)
 
-        layout.addWidget(self.tabs)
+        self.stack = QStackedWidget()
+        self.stack.setMinimumWidth(0)
+        self._tab_widgets: list[FolderTree] = []
+        self._last_real_index = -1
+        self._add_control_tabs()
+
+        layout.addWidget(header)
+        layout.addWidget(self.stack, 1)
         self._last_dir = str(Path.home())
+
+    def _add_control_tabs(self) -> None:
+        idx = self.tab_bar.addTab("+")
+        self.tab_bar.setTabData(idx, _ADD_FOLDER_TAB)
+        self.tab_bar.setTabToolTip(idx, "添加文件夹 (Ctrl+O)")
+
+    def _remove_control_tabs(self) -> None:
+        for idx in range(self.tab_bar.count()):
+            if self.tab_bar.tabData(idx) == _ADD_FOLDER_TAB:
+                self.tab_bar.removeTab(idx)
+                return
+
+    def _is_add_tab(self, idx: int) -> bool:
+        return idx >= 0 and self.tab_bar.tabData(idx) == _ADD_FOLDER_TAB
+
+    def _on_current_changed(self, idx: int) -> None:
+        if self._is_add_tab(idx):
+            return
+        if 0 <= idx < self.stack.count():
+            self._last_real_index = idx
+            self.stack.setCurrentIndex(idx)
+
+    def _on_tab_clicked(self, idx: int) -> None:
+        if self._is_add_tab(idx):
+            opened = self.add_folder()
+            if not opened and 0 <= self._last_real_index < len(self._tab_widgets):
+                self.tab_bar.setCurrentIndex(self._last_real_index)
+
+    def _on_tab_moved(self, from_idx: int, to_idx: int) -> None:
+        QTimer.singleShot(0, self._normalize_tab_order)
+
+    def _normalize_tab_order(self) -> None:
+        self._remove_control_tabs()
+        self._add_control_tabs()
+
+        ordered: list[FolderTree] = []
+        for idx in range(self.tab_bar.count()):
+            data = self.tab_bar.tabData(idx)
+            if isinstance(data, FolderTree):
+                ordered.append(data)
+
+        if ordered != self._tab_widgets:
+            current = self.stack.currentWidget()
+            self._tab_widgets = ordered
+            for widget in ordered:
+                self.stack.removeWidget(widget)
+            for widget in ordered:
+                self.stack.addWidget(widget)
+            if current in ordered:
+                self.stack.setCurrentWidget(current)
+                self._last_real_index = ordered.index(current)
+
+        if 0 <= self._last_real_index < len(self._tab_widgets):
+            self.tab_bar.setCurrentIndex(self._last_real_index)
 
     # ── Public session helpers ────────────────────────────────────────────────
 
@@ -669,20 +750,20 @@ class FolderTabsPanel(QWidget):
     def open_paths(self) -> list[str]:
         """返回当前所有标签页的文件夹路径。"""
         result = []
-        for i in range(self.tabs.count()):
-            tree = self.tabs.widget(i)
+        for tree in self._tab_widgets:
             if isinstance(tree, FolderTree) and tree.topLevelItemCount() > 0:
                 disp: str = tree.topLevelItem(0).data(0, _DIR_ROLE) or ""
                 if disp:
                     result.append(disp)
         return result
 
-    def add_folder(self) -> None:
+    def add_folder(self) -> bool:
         folder = QFileDialog.getExistingDirectory(self, "选择文件夹", self._last_dir)
         if not folder:
-            return
+            return False
         self._last_dir = folder
         self._open(Path(folder))
+        return True
 
     def _open(self, p: Path) -> None:
         display = str(p).replace("\\", "/")
@@ -690,10 +771,15 @@ class FolderTabsPanel(QWidget):
         tree.file_selected.connect(self.file_selected)
         tree.path_copied.connect(self.path_copied)
 
-        idx = self.tabs.addTab(tree, p.name)
-        self.tabs.setTabToolTip(idx, display)
+        self._remove_control_tabs()
+        idx = self.tab_bar.addTab(p.name)
+        self.tab_bar.setTabData(idx, tree)
+        self._tab_widgets.append(tree)
+        self.stack.addWidget(tree)
+        self.tab_bar.setTabToolTip(idx, display)
         self._attach_close_btn(idx, tree)
-        self.tabs.setCurrentIndex(idx)
+        self._add_control_tabs()
+        self.tab_bar.setCurrentIndex(idx)
         tree.load_folder(p, display)
 
     def _attach_close_btn(self, idx: int, tree: FolderTree) -> None:
@@ -703,12 +789,23 @@ class FolderTabsPanel(QWidget):
         btn.setFixedSize(15, 15)
         btn.setToolTip("关闭")
         btn.clicked.connect(lambda: self._close(tree))
-        self.tabs.tabBar().setTabButton(idx, QTabBar.ButtonPosition.RightSide, btn)
+        self.tab_bar.setTabButton(idx, QTabBar.ButtonPosition.RightSide, btn)
 
     def _close(self, tree: FolderTree) -> None:
-        idx = self.tabs.indexOf(tree)
+        try:
+            idx = self._tab_widgets.index(tree)
+        except ValueError:
+            return
         if idx >= 0:
-            self.tabs.removeTab(idx)
+            self._tab_widgets.pop(idx)
+            self.tab_bar.removeTab(idx)
+            self.stack.removeWidget(tree)
+            tree.deleteLater()
+            if self._tab_widgets:
+                self._last_real_index = min(idx, len(self._tab_widgets) - 1)
+                self.tab_bar.setCurrentIndex(self._last_real_index)
+            else:
+                self._last_real_index = -1
 
 
 # ── Search highlight JS (injected into WebEngine pages) ───────────────────────
