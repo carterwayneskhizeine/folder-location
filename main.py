@@ -2309,6 +2309,8 @@ class MainWindow(QMainWindow):
 
     def _on_preview_tab_switched(self, path: Path) -> None:
         self.folder_panel.navigate_to_file(path)
+        self._status.setText("  " + path.as_posix())
+        self._fade.stop()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
