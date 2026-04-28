@@ -6,13 +6,14 @@ import ctypes
 import subprocess
 import html as _html
 from pathlib import Path
+from datetime import datetime, timedelta
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QTabBar, QSplitter, QFileDialog, QPlainTextEdit,
     QSystemTrayIcon, QMenu, QStackedWidget, QToolButton,
-    QProxyStyle, QStyle,
+    QProxyStyle, QStyle, QScrollArea,
 )
 from PySide6.QtCore import (
     Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize, QFileSystemWatcher,
@@ -280,6 +281,54 @@ QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #484f58; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+
+/* ── Sidebar strip ── */
+#sidebarStrip {
+    background: #0d1117;
+    border-right: 1px solid #30363d;
+}
+#sidebarBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #8b949e;
+    font-size: 15px;
+    padding: 2px;
+}
+#sidebarBtn:hover { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+#sidebarBtn:checked { background: #0d2340; border-color: #1f6feb; color: #58a6ff; }
+
+/* ── History panel ── */
+#historyHeader {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    color: #8b949e;
+    font-size: 12px;
+    font-family: "Consolas", monospace;
+    padding-left: 8px;
+}
+QScrollArea#historyScroll { border: none; background: transparent; }
+#historyRow {
+    background: #0d1117;
+    border: none;
+    border-bottom: 1px solid #161b22;
+}
+#historyRow:hover { background: #161b22; }
+#historyTime {
+    color: #6e7681;
+    font-size: 11px;
+    font-family: "Consolas", monospace;
+}
+#historyName {
+    color: #c9d1d9;
+    font-size: 12px;
+    font-family: "Consolas", monospace;
+}
+#historyEmpty {
+    color: #484f58;
+    font-size: 13px;
+    padding: 20px;
+}
 """
 
 
@@ -623,9 +672,10 @@ def render_file(path: Path) -> tuple[str, bool]:
 # ── FolderTree ────────────────────────────────────────────────────────────────
 
 class FolderTree(QTreeWidget):
-    path_copied   = Signal(str)
-    file_selected = Signal(Path)
-    folder_changed = Signal(str)
+    path_copied       = Signal(str)
+    file_selected     = Signal(Path)
+    folder_changed    = Signal(str)
+    file_change_event = Signal(str, str)   # (abs_path, event_type: added|deleted|modified)
 
     _BTN_H = 20
     _BTN_GAP = 4
@@ -645,6 +695,7 @@ class FolderTree(QTreeWidget):
         self._root_parent: Path | None = None
         self._root_exists = False
         self._pending_refresh: set[str] = set()
+        self._pending_file_modified: set[str] = set()
 
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
@@ -856,9 +907,14 @@ class FolderTree(QTreeWidget):
 
     def _on_tree_file_changed(self, path: str) -> None:
         self._pending_refresh.add(str(Path(path).parent))
+        self._pending_file_modified.add(path)
         self._refresh_timer.start()
 
     def _flush_refreshes(self) -> None:
+        for path in self._pending_file_modified:
+            self.file_change_event.emit(path, "modified")
+        self._pending_file_modified.clear()
+
         paths = list(self._pending_refresh)
         self._pending_refresh.clear()
         for path in paths:
@@ -911,11 +967,36 @@ class FolderTree(QTreeWidget):
             self._root_exists = True
         expanded = self._expanded_dir_paths(item)
         was_expanded = item.isExpanded()
+
+        # Snapshot existing children for added/deleted detection
+        old_paths: set[str] = set()
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.text(0) != _PLACEHOLDER:
+                p = child.data(0, _PATH_ROLE)
+                if p:
+                    old_paths.add(str(p))
+        was_populated = bool(old_paths)
+
         item.takeChildren()
         if item.parent() is None:
             item.setText(0, "📂  " + folder.name)
             item.setForeground(0, QColor("#79c0ff"))
         self._fill(item, folder, disp)
+
+        if was_populated:
+            new_paths: set[str] = set()
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if child.text(0) != _PLACEHOLDER:
+                    p = child.data(0, _PATH_ROLE)
+                    if p:
+                        new_paths.add(str(p))
+            for path in new_paths - old_paths:
+                self.file_change_event.emit(path, "added")
+            for path in old_paths - new_paths:
+                self.file_change_event.emit(path, "deleted")
+
         self._restore_expanded_dirs(item, expanded)
         item.setExpanded(was_expanded or item.parent() is None)
         self._watch_dir(folder)
@@ -1054,9 +1135,10 @@ class HiddenTabScrollButtonStyle(QProxyStyle):
 class FolderTabsPanel(QWidget):
     """左侧多文件夹标签页面板。"""
 
-    file_selected = Signal(Path)
-    path_copied   = Signal(str)
-    folder_changed = Signal(str)
+    file_selected     = Signal(Path)
+    path_copied       = Signal(str)
+    folder_changed    = Signal(str)
+    file_change_event = Signal(str, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1190,6 +1272,7 @@ class FolderTabsPanel(QWidget):
         tree.file_selected.connect(self.file_selected)
         tree.path_copied.connect(self.path_copied)
         tree.folder_changed.connect(self.folder_changed)
+        tree.file_change_event.connect(self.file_change_event)
 
         self._remove_control_tabs()
         idx = self.tab_bar.addTab(p.name)
@@ -2123,6 +2206,311 @@ class PreviewPane(QWidget):
                 self.open_browser(url)
 
 
+# ── History Panel ─────────────────────────────────────────────────────────────
+
+class HistoryRowWidget(QWidget):
+    """单条历史记录行（含悬浮复制/打开按钮）。"""
+
+    copy_clicked = Signal(str)
+    item_clicked = Signal(Path)
+
+    _BTN_H = 20
+    _EVENT_COLORS = {"added": "#3fb950", "deleted": "#f85149", "modified": "#58a6ff"}
+    _EVENT_LABELS = {"added": "+", "deleted": "−", "modified": "~"}
+
+    def __init__(self, path: str, event_type: str, ts: datetime, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._ts = ts
+        self._event_type = event_type
+        self.setFixedHeight(26)
+        self.setMouseTracking(True)
+        self.setObjectName("historyRow")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 0, 4, 0)
+        layout.setSpacing(4)
+
+        color = self._EVENT_COLORS.get(event_type, "#8b949e")
+        dot = QLabel(self._EVENT_LABELS.get(event_type, "·"))
+        dot.setFixedWidth(12)
+        dot.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: bold;")
+        layout.addWidget(dot)
+
+        self._time_lbl = QLabel(self._fmt_time())
+        self._time_lbl.setFixedWidth(58)
+        self._time_lbl.setObjectName("historyTime")
+        layout.addWidget(self._time_lbl)
+
+        p = Path(path)
+        icon = _file_icon(p.name) if not p.suffix == "" or p.is_file() else "📁  "
+        name_lbl = QLabel(icon + p.name)
+        name_lbl.setObjectName("historyName")
+        name_lbl.setToolTip(path)
+        if event_type == "deleted":
+            name_lbl.setStyleSheet("color: #6e7681;")
+        layout.addWidget(name_lbl, 1)
+
+        self._copy_btn = QPushButton("Copy")
+        self._copy_btn.setObjectName("treeActionBtn")
+        self._copy_btn.setFixedHeight(self._BTN_H)
+        self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._copy_btn.hide()
+        self._copy_btn.clicked.connect(self._do_copy)
+        layout.addWidget(self._copy_btn)
+
+        self._open_btn = QPushButton("Open")
+        self._open_btn.setObjectName("treeActionBtn")
+        self._open_btn.setFixedHeight(self._BTN_H)
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_btn.hide()
+        self._open_btn.clicked.connect(self._do_open)
+        layout.addWidget(self._open_btn)
+
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.setInterval(90)
+        self._hide_timer.timeout.connect(self._hide_btns)
+
+    def _fmt_time(self) -> str:
+        secs = int((datetime.now() - self._ts).total_seconds())
+        if secs < 60:
+            return "刚刚"
+        if secs < 3600:
+            return f"{secs // 60}分钟前"
+        return f"{secs // 3600}小时前"
+
+    def update_time(self) -> None:
+        self._time_lbl.setText(self._fmt_time())
+
+    def enterEvent(self, event) -> None:
+        self._hide_timer.stop()
+        self._copy_btn.show()
+        self._open_btn.show()
+
+    def leaveEvent(self, event) -> None:
+        self._hide_timer.start()
+
+    def _hide_btns(self) -> None:
+        self._copy_btn.hide()
+        self._open_btn.hide()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            p = Path(self._path)
+            if p.is_file():
+                self.item_clicked.emit(p)
+        super().mousePressEvent(event)
+
+    def _do_copy(self) -> None:
+        text = "@" + self._path.replace("\\", "/")
+        QApplication.clipboard().setText(text)
+        self.copy_clicked.emit(text)
+        self._copy_btn.setText("OK")
+        QTimer.singleShot(900, lambda: self._copy_btn.setText("Copy"))
+
+    def _do_open(self) -> None:
+        p = Path(self._path)
+        target = p if p.exists() else (p.parent if p.parent.exists() else None)
+        if target:
+            subprocess.Popen(f'explorer /select,"{target}"')
+
+
+class HistoryPanel(QWidget):
+    """最近 24 小时文件更改历史面板。"""
+
+    file_selected = Signal(Path)
+    path_copied   = Signal(str)
+
+    _MAX_AGE     = 86400  # 24h in seconds
+    _MAX_ENTRIES = 300
+
+    def __init__(self):
+        super().__init__()
+        vl = QVBoxLayout(self)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(0)
+
+        header = QLabel("  更改历史")
+        header.setObjectName("historyHeader")
+        header.setFixedHeight(36)
+        vl.addWidget(header)
+
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("historyScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._container = QWidget()
+        self._cl = QVBoxLayout(self._container)
+        self._cl.setContentsMargins(0, 0, 0, 0)
+        self._cl.setSpacing(0)
+        self._cl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._scroll.setWidget(self._container)
+        vl.addWidget(self._scroll, 1)
+
+        self._entries: list[tuple[datetime, str, str]] = []
+        self._rows: list[HistoryRowWidget] = []
+
+        self._empty_lbl = QLabel("暂无更改记录")
+        self._empty_lbl.setObjectName("historyEmpty")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cl.addWidget(self._empty_lbl)
+
+        self._dirty = False
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.setInterval(250)
+        self._rebuild_timer.timeout.connect(self._do_rebuild)
+
+        self._tick = QTimer(self)
+        self._tick.setInterval(60_000)
+        self._tick.timeout.connect(self._tick_times)
+        self._tick.start()
+
+    def add_event(self, path: str, event_type: str) -> None:
+        now = datetime.now()
+        cutoff = now - timedelta(seconds=self._MAX_AGE)
+        self._entries = [(ts, p, et) for ts, p, et in self._entries if ts > cutoff]
+
+        # Deduplicate: skip if identical event on same path within 2 seconds
+        if self._entries:
+            last_ts, last_p, last_et = self._entries[0]
+            if last_p == path and last_et == event_type:
+                if (now - last_ts).total_seconds() < 2:
+                    return
+
+        self._entries.insert(0, (now, path, event_type))
+        if len(self._entries) > self._MAX_ENTRIES:
+            self._entries = self._entries[:self._MAX_ENTRIES]
+
+        self._dirty = True
+        self._rebuild_timer.start()
+
+    def _do_rebuild(self) -> None:
+        self._dirty = False
+        for row in self._rows:
+            self._cl.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+
+        if not self._entries:
+            self._empty_lbl.show()
+            return
+
+        self._empty_lbl.hide()
+        for ts, path, event_type in self._entries:
+            row = HistoryRowWidget(path, event_type, ts)
+            row.copy_clicked.connect(self.path_copied)
+            row.item_clicked.connect(self.file_selected)
+            self._rows.append(row)
+            self._cl.addWidget(row)
+
+    def _tick_times(self) -> None:
+        now = datetime.now()
+        cutoff = now - timedelta(seconds=self._MAX_AGE)
+        old_count = len(self._entries)
+        self._entries = [(ts, p, et) for ts, p, et in self._entries if ts > cutoff]
+        if len(self._entries) != old_count:
+            self._do_rebuild()
+        else:
+            for row in self._rows:
+                row.update_time()
+
+
+class LeftPanel(QWidget):
+    """侧边栏切换按钮 + 文件树/历史记录堆叠面板。"""
+
+    file_selected  = Signal(Path)
+    path_copied    = Signal(str)
+    folder_changed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Narrow sidebar strip
+        strip = QWidget()
+        strip.setObjectName("sidebarStrip")
+        strip.setFixedWidth(32)
+        sl = QVBoxLayout(strip)
+        sl.setContentsMargins(2, 8, 2, 8)
+        sl.setSpacing(4)
+        sl.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._tree_btn = QToolButton()
+        self._tree_btn.setObjectName("sidebarBtn")
+        self._tree_btn.setText("📂")
+        self._tree_btn.setToolTip("文件树")
+        self._tree_btn.setCheckable(True)
+        self._tree_btn.setChecked(True)
+        self._tree_btn.setFixedSize(28, 28)
+        self._tree_btn.clicked.connect(self._show_tree)
+
+        self._hist_btn = QToolButton()
+        self._hist_btn.setObjectName("sidebarBtn")
+        self._hist_btn.setText("🕐")
+        self._hist_btn.setToolTip("更改历史")
+        self._hist_btn.setCheckable(True)
+        self._hist_btn.setFixedSize(28, 28)
+        self._hist_btn.clicked.connect(self._show_history)
+
+        sl.addWidget(self._tree_btn)
+        sl.addWidget(self._hist_btn)
+
+        # Content stack
+        self._stack = QStackedWidget()
+        self.folder_panel = FolderTabsPanel()
+        self.history_panel = HistoryPanel()
+        self._stack.addWidget(self.folder_panel)   # index 0
+        self._stack.addWidget(self.history_panel)  # index 1
+
+        outer.addWidget(strip)
+        outer.addWidget(self._stack, 1)
+
+        self.folder_panel.file_selected.connect(self.file_selected)
+        self.folder_panel.path_copied.connect(self.path_copied)
+        self.folder_panel.folder_changed.connect(self.folder_changed)
+        self.folder_panel.file_change_event.connect(self.history_panel.add_event)
+
+        self.history_panel.file_selected.connect(self.file_selected)
+        self.history_panel.path_copied.connect(self.path_copied)
+
+    def _show_tree(self) -> None:
+        self._stack.setCurrentIndex(0)
+        self._tree_btn.setChecked(True)
+        self._hist_btn.setChecked(False)
+
+    def _show_history(self) -> None:
+        self._stack.setCurrentIndex(1)
+        self._tree_btn.setChecked(False)
+        self._hist_btn.setChecked(True)
+
+    # ── Proxy interface ───────────────────────────────────────────────────────
+
+    @property
+    def _last_dir(self) -> str:
+        return self.folder_panel._last_dir
+
+    @_last_dir.setter
+    def _last_dir(self, val: str) -> None:
+        self.folder_panel._last_dir = val
+
+    def open_paths(self) -> list[str]:
+        return self.folder_panel.open_paths()
+
+    def open_path(self, path_str: str) -> None:
+        self.folder_panel.open_path(path_str)
+
+    def add_folder(self) -> bool:
+        return self.folder_panel.add_folder()
+
+    def navigate_to_file(self, path: Path) -> None:
+        self.folder_panel.navigate_to_file(path)
+
+
 # ── MainWindow ────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -2144,12 +2532,12 @@ class MainWindow(QMainWindow):
         splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
 
-        self.folder_panel = FolderTabsPanel()
+        self.left_panel = LeftPanel()
         self.preview = PreviewPane()
 
-        splitter.addWidget(self.folder_panel)
+        splitter.addWidget(self.left_panel)
         splitter.addWidget(self.preview)
-        splitter.setSizes([400, 1040])
+        splitter.setSizes([432, 1040])
         vl.addWidget(splitter, 1)
 
         # 状态栏
@@ -2161,16 +2549,16 @@ class MainWindow(QMainWindow):
         self._fade.timeout.connect(lambda: self._status.setText(""))
         vl.addWidget(self._status)
 
-        self.folder_panel.file_selected.connect(self.preview.show_file)
-        self.folder_panel.path_copied.connect(self._on_copied)
-        self.folder_panel.folder_changed.connect(self._on_folder_changed)
+        self.left_panel.file_selected.connect(self.preview.show_file)
+        self.left_panel.path_copied.connect(self._on_copied)
+        self.left_panel.folder_changed.connect(self._on_folder_changed)
         self.preview.path_copied.connect(self._on_copied)
         self.preview.file_tab_switched.connect(self._on_preview_tab_switched)
 
         # 快捷键
         from PySide6.QtGui import QShortcut, QKeySequence
         QShortcut(QKeySequence("Ctrl+O"), self).activated.connect(
-            self.folder_panel.add_folder
+            self.left_panel.add_folder
         )
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(
             self.preview.open_search
@@ -2262,8 +2650,8 @@ class MainWindow(QMainWindow):
 
     def save_session(self) -> None:
         s = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
-        s.setValue("session/folders",  self.folder_panel.open_paths())
-        s.setValue("session/last_dir", self.folder_panel._last_dir)
+        s.setValue("session/folders",  self.left_panel.open_paths())
+        s.setValue("session/last_dir", self.left_panel._last_dir)
         s.setValue("session/preview_files", self.preview.open_paths())
         s.setValue("session/browser_urls", self.preview.browser_urls())
 
@@ -2271,13 +2659,13 @@ class MainWindow(QMainWindow):
         s = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
         last_dir = s.value("session/last_dir", "")
         if last_dir:
-            self.folder_panel._last_dir = last_dir
+            self.left_panel._last_dir = last_dir
 
         paths = s.value("session/folders", [])
         if isinstance(paths, str):          # QSettings 单值时返回裸字符串
             paths = [paths] if paths else []
         for p in paths or []:
-            self.folder_panel.open_path(str(p))
+            self.left_panel.open_path(str(p))
 
         preview_paths = s.value("session/preview_files", [])
         if isinstance(preview_paths, str):
@@ -2308,7 +2696,7 @@ class MainWindow(QMainWindow):
         self._fade.start()
 
     def _on_preview_tab_switched(self, path: Path) -> None:
-        self.folder_panel.navigate_to_file(path)
+        self.left_panel.navigate_to_file(path)
         self._status.setText("  " + path.as_posix())
         self._fade.stop()
 
