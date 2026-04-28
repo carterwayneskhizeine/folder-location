@@ -1718,6 +1718,33 @@ class PreviewPane(QWidget):
             view.page().runJavaScript(_SEARCH_JS)
             self._js_ready = True
 
+    # ── Session helpers ───────────────────────────────────────────────────────
+
+    def open_paths(self) -> list[str]:
+        """返回当前所有标签页的文件路径。"""
+        return [str(p) for p in self._ordered_paths]
+
+    def restore_tabs(self, paths: list[str]) -> None:
+        """恢复之前打开的文件标签页。"""
+        self._block_tab_signal = True
+        try:
+            for p in paths:
+                path = Path(p)
+                if path.is_file():
+                    view = self._create_view()
+                    self._tabs[path] = {"view": view}
+                    self._ordered_paths.append(path)
+                    idx = self._tab_bar.addTab(path.name)
+                    self._tab_bar.setTabData(idx, path)
+                    self._tab_bar.setTabToolTip(idx, str(path).replace("\\", "/"))
+                    self._attach_close_btn(idx, path)
+                    self._stack.addWidget(view)
+                    self._render_in_view(view, path)
+            if self._ordered_paths:
+                self._tab_bar.setCurrentIndex(0)
+        finally:
+            self._block_tab_signal = False
+
 
 # ── MainWindow ────────────────────────────────────────────────────────────────
 
@@ -1726,7 +1753,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Folder Location")
         self.setWindowIcon(icon)
-        self.resize(1440, 840)
+        self.resize(1280, 720)
         self.setMinimumSize(900, 500)
 
         central = QWidget()
@@ -1852,6 +1879,7 @@ class MainWindow(QMainWindow):
         s = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
         s.setValue("session/folders",  self.folder_panel.open_paths())
         s.setValue("session/last_dir", self.folder_panel._last_dir)
+        s.setValue("session/preview_files", self.preview.open_paths())
 
     def restore_session(self) -> None:
         s = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
@@ -1864,6 +1892,12 @@ class MainWindow(QMainWindow):
             paths = [paths] if paths else []
         for p in paths or []:
             self.folder_panel.open_path(str(p))
+
+        preview_paths = s.value("session/preview_files", [])
+        if isinstance(preview_paths, str):
+            preview_paths = [preview_paths] if preview_paths else []
+        if preview_paths:
+            self.preview.restore_tabs(preview_paths)
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
