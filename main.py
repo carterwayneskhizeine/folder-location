@@ -402,6 +402,30 @@ def _format_copy_path(path: Path, start_line: int | None, end_line: int | None, 
     return f"{path_text}\n```\n{text}\n```"
 
 
+def _line_range_for_selection(path: Path, selected_text: str) -> tuple[int | None, int | None]:
+    try:
+        source = path.read_text(encoding="utf-8", errors="strict")
+    except Exception:
+        return None, None
+
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
+    needle = _normalize_selected_text(selected_text).replace("\r\n", "\n").replace("\r", "\n")
+    if not needle:
+        return None, None
+
+    idx = source.find(needle)
+    if idx < 0 and needle.endswith("\n"):
+        needle = needle.rstrip("\n")
+        idx = source.find(needle)
+    if idx < 0:
+        return None, None
+
+    start_line = source.count("\n", 0, idx) + 1
+    selected_for_count = needle[:-1] if needle.endswith("\n") else needle
+    end_line = start_line + selected_for_count.count("\n")
+    return start_line, end_line
+
+
 def _pygments_css(cls: str = ".highlight") -> str:
     return _HtmlFmt(style="monokai").get_style_defs(cls) if HAS_PYGMENTS else ""
 
@@ -806,6 +830,8 @@ class PreviewWebView(QWebEngineView if HAS_WEBENGINE else QWidget):
                 start_line = None
             if not isinstance(end_line, int):
                 end_line = None
+            if start_line is None:
+                start_line, end_line = _line_range_for_selection(self.current_path, text)
 
             menu = QMenu(self)
             copy_path = menu.addAction("Copy Path")
