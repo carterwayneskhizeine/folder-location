@@ -520,6 +520,16 @@ def render_file(path: Path) -> tuple[str, bool]:
     except Exception as e:
         return _build(_PLAIN_CSS, f"<pre>读取失败：{_html.escape(str(e))}</pre>"), False
 
+    # ── Performance: 对大文件跳过语法高亮 ─────────────────────────────────────
+    # 超过 200KB 的文件直接显示纯文本，避免 Pygments/Markdown 解析卡顿
+    _FAST_PREVIEW_LIMIT = 200 * 1024
+    if size > _FAST_PREVIEW_LIMIT:
+        escaped = _html.escape(text)
+        # 限制显示长度避免内存问题
+        if len(text) > 500_000:  # 约 500KB 文本内容
+            escaped = escaped[:500_000] + "\n\n... (文件过大，已截断显示) ..."
+        return _build(_PLAIN_CSS, f"<pre>{escaped}</pre>"), False
+
     # ── Markdown ──────────────────────────────────────────────────────────────
     if ext in ("md", "mdx", "markdown") and HAS_MARKDOWN:
         exts = ["tables", "fenced_code", "toc"]
@@ -1281,6 +1291,12 @@ class PreviewWebView(QWebEngineView if HAS_WEBENGINE else QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
+        if HAS_WEBENGINE:
+            # 设置深色背景避免加载时闪白
+            self.page().setBackgroundColor(QColor("#0d1117"))
+            # 通过 HTML 设置页面背景色
+            self.setHtml(_EMPTY_HTML)
+
     def _show_context_menu(self, pos) -> None:
         if not self.current_path:
             return
@@ -1568,8 +1584,12 @@ class PreviewPane(QWidget):
         self._stack.setCurrentWidget(info["view"])
 
         if HAS_WEBENGINE and isinstance(info["view"], PreviewWebView):
-            info["view"].page().runJavaScript(_SEARCH_JS)
-            self._js_ready = True
+            # 确保切换时背景保持深色
+            if not info["view"].current_path:
+                info["view"].setHtml(_EMPTY_HTML)
+            else:
+                info["view"].page().runJavaScript(_SEARCH_JS)
+                self._js_ready = True
 
         if not getattr(self, "_block_tab_signal", False):
             self.file_tab_switched.emit(path)
@@ -1584,6 +1604,8 @@ class PreviewPane(QWidget):
         self._js_ready = False
         if HAS_WEBENGINE and isinstance(view, PreviewWebView):
             view.current_path = path
+            # 先设置深色背景，避免加载时闪白
+            view.page().setBackgroundColor(QColor("#0d1117"))
         elif isinstance(view, PreviewPlainTextEdit):
             view.current_path = path
 
