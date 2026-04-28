@@ -342,8 +342,18 @@ pre {
     padding: 16px; overflow-x: auto; line-height: 1.45; margin: 0 0 14px;
 }
 pre code { background:none; border:none; padding:0; color:#c9d1d9; font-size:100%; }
-.codehilite { background: #161b22 !important; border: 1px solid #30363d; border-radius: 6px; overflow-x: auto; margin: 0 0 14px; }
+.codehilite { background: #161b22 !important; border: 1px solid #30363d; border-radius: 6px; overflow-x: auto; margin: 0; }
 .codehilite pre { margin:0; padding:14px 16px; background:transparent; }
+.code-wrapper { position: relative; margin-bottom: 14px; }
+.code-copy-btn {
+    position: absolute; top: 8px; right: 8px;
+    background: #21262d; border: 1px solid #30363d;
+    color: #8b949e; font-size: 11px; padding: 4px 8px;
+    border-radius: 4px; cursor: pointer; opacity: 0;
+    transition: opacity 0.15s; z-index: 10;
+}
+.code-copy-btn:hover { background: #30363d; color: #c9d1d9; border-color: #8b949e; }
+.code-wrapper:hover .code-copy-btn { opacity: 1; }
 blockquote { border-left:4px solid #30363d; margin:0 0 14px; padding:0 16px; color:#8b949e; }
 table { border-collapse:collapse; width:100%; margin-bottom:14px; }
 th,td { border:1px solid #30363d; padding:6px 12px; text-align:left; }
@@ -357,6 +367,7 @@ li { margin-bottom:4px; }
 
 _CODE_CSS = _BASE_CSS + """
 body { padding: 0; font-family: "Consolas","Courier New",monospace; font-size: 13px; }
+.code-wrapper { position: relative; margin-bottom: 14px; }
 .highlight { background: #0d1117 !important; margin: 0; }
 .highlight pre { margin:0; padding:18px 20px; line-height:1.5; overflow-x:auto; }
 table.highlighttable { width:100%; border-collapse:collapse; table-layout:fixed; }
@@ -371,6 +382,15 @@ td.linenos .linenodiv pre {
 }
 td.code { padding:0; vertical-align:top; }
 td.code .highlight pre { padding: 18px 20px; }
+.code-copy-btn {
+    position: absolute; top: 8px; right: 8px;
+    background: #21262d; border: 1px solid #30363d;
+    color: #8b949e; font-size: 11px; padding: 4px 8px;
+    border-radius: 4px; cursor: pointer; opacity: 0;
+    transition: opacity 0.15s; z-index: 10;
+}
+.code-copy-btn:hover { background: #30363d; color: #c9d1d9; border-color: #8b949e; }
+.code-wrapper:hover .code-copy-btn { opacity: 1; }
 """
 
 _PLAIN_CSS = _BASE_CSS + """
@@ -398,6 +418,36 @@ _EMPTY_HTML = _HTML_TPL.format(
 
 def _build(style: str, body: str) -> str:
     return _HTML_TPL.format(style=style, body=body)
+
+
+def _wrap_code_blocks(html: str, wrap_class: str = "code-wrapper") -> str:
+    """为代码块添加包裹层和复制按钮。"""
+    import re
+
+    def wrap_highlight(match):
+        content = match.group(0)
+        return f'<div class="{wrap_class}">{content}<button class="code-copy-btn">Copy</button></div>'
+
+    # 匹配 .highlight 容器（Pygments 生成的代码块）
+    html = re.sub(r'<div class="highlight">.*?</div>', wrap_highlight, html, flags=re.DOTALL)
+
+    # 匹配 table.highlighttable（带行号的 Pygments 代码块）
+    html = re.sub(
+        r'<table class="highlighttable">.*?</table>',
+        lambda m: f'<div class="{wrap_class}">{m.group(0)}<button class="code-copy-btn">Copy</button></div>',
+        html,
+        flags=re.DOTALL,
+    )
+
+    # 匹配 .codehilite（markdown codehilite）
+    html = re.sub(
+        r'<div class="codehilite">.*?</div>',
+        lambda m: f'<div class="{wrap_class}">{m.group(0)}<button class="code-copy-btn">Copy</button></div>',
+        html,
+        flags=re.DOTALL,
+    )
+
+    return html
 
 
 def _normalize_selected_text(text: str) -> str:
@@ -480,6 +530,7 @@ def render_file(path: Path) -> tuple[str, bool]:
             ext_cfg["codehilite"] = {"css_class": "codehilite", "guess_lang": False}
             extra_css = _pygments_css(".codehilite")
         body = _md.markdown(text, extensions=exts, extension_configs=ext_cfg)
+        body = _wrap_code_blocks(body, "code-wrapper")
         return _build(_MD_CSS + extra_css, body), False
 
     # ── Code with Pygments ────────────────────────────────────────────────────
@@ -492,6 +543,7 @@ def render_file(path: Path) -> tuple[str, bool]:
             fmt = _HtmlFmt(style="monokai", linenos="table", wrapcode=True)
             pyg_css = fmt.get_style_defs(".highlight")
             highlighted = _hl(text, lexer, fmt)
+            highlighted = _wrap_code_blocks(highlighted, "code-wrapper")
             return _build(_CODE_CSS + pyg_css, highlighted), False
 
     # ── Plain text ────────────────────────────────────────────────────────────
@@ -1142,6 +1194,46 @@ window._searchHL = {
   next() { return this.marks.length ? this._goto((this.idx + 1) % this.marks.length) : this._result(-1, 0); },
   prev() { return this.marks.length ? this._goto((this.idx - 1 + this.marks.length) % this.marks.length) : this._result(-1, 0); },
 };
+(function() {
+  function getCodeText(wrapper) {
+    const table = wrapper.querySelector('table.highlighttable');
+    if (table) {
+      const codeCell = table.querySelector('td.code .highlight pre, td.code pre');
+      return codeCell ? codeCell.textContent : '';
+    }
+    const pre = wrapper.querySelector('pre');
+    return pre ? pre.textContent : '';
+  }
+  function setupCopyButtons() {
+    document.querySelectorAll('.code-copy-btn').forEach(btn => {
+      if (btn.dataset.setup) return;
+      btn.dataset.setup = '1';
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const wrapper = this.parentElement;
+        const text = getCodeText(wrapper);
+        if (text) {
+          navigator.clipboard.writeText(text).then(() => {
+            const origText = this.textContent;
+            this.textContent = 'Copied!';
+            this.style.color = '#58a6ff';
+            setTimeout(() => {
+              this.textContent = origText;
+              this.style.color = '';
+            }, 1500);
+          }).catch(err => {
+            this.textContent = 'Failed';
+            setTimeout(() => { this.textContent = 'Copy'; }, 1500);
+          });
+        }
+      });
+    });
+  }
+  setupCopyButtons();
+  const observer = new MutationObserver(() => setupCopyButtons());
+  observer.observe(document.body, { childList: true, subtree: true });
+})();
 """
 
 
