@@ -312,8 +312,12 @@ _IMG_EXTS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"}
 
 
 def _load_icon() -> QIcon:
-    """加载 icon.svg，兼容开发目录和 PyInstaller 打包后的路径。"""
+    """加载图标，Windows 优先用 icon.ico（多尺寸位图），其他平台用 icon.svg。"""
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    if sys.platform == "win32":
+        ico = base / "icon.ico"
+        if ico.exists():
+            return QIcon(str(ico))
     svg = base / "icon.svg"
     return QIcon(str(svg)) if svg.exists() else QIcon()
 
@@ -478,12 +482,13 @@ def _wrap_code_blocks(html: str, wrap_class: str = "code-wrapper") -> str:
     """为代码块添加包裹层和复制按钮。"""
     import re
 
-    placeholder = "\x00WRAP\x00"
+    placeholder_prefix = "__CODE_WRAP_PLACEHOLDER_"
+    placeholder_suffix = "__"
     wraps: list[str] = []
 
     def _store(m):
         wraps.append(f'<div class="{wrap_class}">{m.group(0)}<button class="code-copy-btn">Copy</button></div>')
-        return placeholder + str(len(wraps) - 1) + placeholder
+        return placeholder_prefix + str(len(wraps) - 1) + placeholder_suffix
 
     # 1) table.highlighttable（带行号的 Pygments 代码块）
     html = re.sub(r'<table class="highlighttable">.+?</table>', _store, html, flags=re.DOTALL)
@@ -495,8 +500,8 @@ def _wrap_code_blocks(html: str, wrap_class: str = "code-wrapper") -> str:
     html = re.sub(r'<div class="highlight">.+?</div>', _store, html, flags=re.DOTALL)
 
     # 还原 placeholder
-    for i, w in enumerate(wraps):
-        html = html.replace(placeholder + str(i) + placeholder, w)
+    for i in range(len(wraps) - 1, -1, -1):
+        html = html.replace(placeholder_prefix + str(i) + placeholder_suffix, wraps[i])
 
     return html
 
@@ -604,7 +609,10 @@ def render_file(path: Path) -> tuple[str, bool]:
             fmt = _HtmlFmt(style="monokai", linenos="table", wrapcode=True)
             pyg_css = fmt.get_style_defs(".highlight")
             highlighted = _hl(text, lexer, fmt)
-            highlighted = _wrap_code_blocks(highlighted, "code-wrapper")
+            highlighted = (
+                f'<div class="code-wrapper">{highlighted}'
+                '<button class="code-copy-btn">Copy</button></div>'
+            )
             return _build(_CODE_CSS + pyg_css, highlighted), False
 
     # ── Plain text ────────────────────────────────────────────────────────────
@@ -2093,6 +2101,7 @@ class PreviewPane(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, icon: QIcon) -> None:
         super().__init__()
+        self._icon = icon
         self.setWindowTitle("Folder Location")
         self.setWindowIcon(icon)
         self.resize(1280, 720)
@@ -2193,6 +2202,8 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         _apply_dark_titlebar(self)
         QTimer.singleShot(0, lambda: _apply_dark_titlebar(self))
+        # QWebEngineView 首次渲染可能重建 HWND，延迟重新设置图标
+        QTimer.singleShot(200, lambda: self.setWindowIcon(self._icon))
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
@@ -2276,6 +2287,8 @@ class MainWindow(QMainWindow):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FolderLocation.App")
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # 关闭窗口不退出，托盘仍在运行
     apply_dark_palette(app)
@@ -2285,6 +2298,7 @@ if __name__ == "__main__":
     app.setWindowIcon(icon)
 
     win = MainWindow(icon)
+    win.winId()  # 提前创建 HWND，防止 QWebEngineView 首次渲染时触发 HWND 重建
     win.show()
     win.restore_session()                    # 恢复上次打开的文件夹
     app.aboutToQuit.connect(win.save_session)  # 退出前保存
