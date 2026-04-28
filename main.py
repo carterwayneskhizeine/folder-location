@@ -149,6 +149,7 @@ QTabBar QToolButton::right-arrow {
     min-height: 15px; max-height: 15px;
     padding: 0;
     margin-left: 2px;
+    margin-right: 5px;
 }
 #tabCloseBtn:hover { background: #484f58; color: #e6edf3; }
 
@@ -1031,7 +1032,7 @@ class FolderTabBar(QTabBar):
     def tabSizeHint(self, index: int) -> QSize:
         size = super().tabSizeHint(index)
         if self.tabData(index) == _ADD_FOLDER_TAB:
-            size.setWidth(42)
+            size.setWidth(60)
         return size
 
     def minimumSizeHint(self) -> QSize:
@@ -1091,6 +1092,17 @@ class FolderTabsPanel(QWidget):
         layout.addWidget(header)
         layout.addWidget(self.stack, 1)
         self._last_dir = str(Path.home())
+
+        from PySide6.QtGui import QShortcut, QKeySequence
+        sc = QShortcut(QKeySequence("Ctrl+W"), self)
+        sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc.activated.connect(self.close_current_tab)
+
+    def close_current_tab(self) -> None:
+        idx = self.tab_bar.currentIndex()
+        if self._is_add_tab(idx) or idx < 0 or idx >= len(self._tab_widgets):
+            return
+        self._close(self._tab_widgets[idx])
 
     def _add_control_tabs(self) -> None:
         idx = self.tab_bar.addTab("+")
@@ -1612,6 +1624,11 @@ class PreviewPane(QWidget):
         self._refresh_timer.setInterval(120)
         self._refresh_timer.timeout.connect(self._flush_preview_refreshes)
 
+        from PySide6.QtGui import QShortcut, QKeySequence
+        sc = QShortcut(QKeySequence("Ctrl+W"), self)
+        sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc.activated.connect(self.close_current_tab)
+
         # ── 搜索栏（默认隐藏）──────────────────────────────────────────────
         self._search_bar = QWidget(self)
         self._search_bar.setObjectName("searchBar")
@@ -1761,6 +1778,16 @@ class PreviewPane(QWidget):
         btn.setToolTip("关闭")
         btn.clicked.connect(lambda: self._close_browser_tab(browser))
         self._tab_bar.setTabButton(idx, QTabBar.ButtonPosition.RightSide, btn)
+
+    def close_current_tab(self) -> None:
+        idx = self._tab_bar.currentIndex()
+        if idx < 0:
+            return
+        data = self._tab_bar.tabData(idx)
+        if isinstance(data, Path):
+            self._close_tab(data)
+        elif isinstance(data, BrowserPanel):
+            self._close_browser_tab(data)
 
     def _close_tab(self, path: Path) -> None:
         if path not in self._tabs:
