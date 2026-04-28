@@ -170,14 +170,6 @@ QTreeWidget::branch { background: #0d1117; }
 #previewHeader {
     background: #161b22;
     border-bottom: 1px solid #30363d;
-    min-height: 30px;
-    max-height: 30px;
-}
-#previewPath {
-    font-family: "Consolas", monospace;
-    font-size: 11px;
-    color: #8b949e;
-    padding: 0 12px;
 }
 
 /* ── Status ── */
@@ -833,6 +825,40 @@ class FolderTree(QTreeWidget):
                 return found
         return None
 
+    def navigate_to_file(self, path: Path) -> None:
+        """展开路径并选中对应文件项。"""
+        item = self._find_file_item(path)
+        if item:
+            self.setCurrentItem(item)
+            self.scrollToItem(item)
+
+    def _find_file_item(self, path: Path) -> QTreeWidgetItem | None:
+        def walk(item: QTreeWidgetItem) -> QTreeWidgetItem | None:
+            if not item.data(0, _IS_DIR):
+                p: Path | None = item.data(0, _PATH_ROLE)
+                if p == path:
+                    return item
+            else:
+                item_path: Path | None = item.data(0, _PATH_ROLE)
+                if item_path is not None and item_path == path.parent:
+                    if item.childCount() == 1 and item.child(0).text(0) == _PLACEHOLDER:
+                        disp: str = item.data(0, _DIR_ROLE) or ""
+                        self._fill(item, item_path, disp)
+                        item.setExpanded(True)
+                    if not item.isExpanded():
+                        item.setExpanded(True)
+                for i in range(item.childCount()):
+                    found = walk(item.child(i))
+                    if found is not None:
+                        return found
+            return None
+
+        for i in range(self.topLevelItemCount()):
+            found = walk(self.topLevelItem(i))
+            if found is not None:
+                return found
+        return None
+
 
 # ── FolderTabsPanel ───────────────────────────────────────────────────────────
 
@@ -1050,6 +1076,21 @@ class FolderTabsPanel(QWidget):
             else:
                 self._last_real_index = -1
 
+    def navigate_to_file(self, path: Path) -> None:
+        """在对应的文件夹标签树中定位并选中文件。"""
+        for tree in self._tab_widgets:
+            root: Path | None = tree._root_path
+            if root is not None:
+                try:
+                    path.relative_to(root)
+                except ValueError:
+                    continue
+                tree.navigate_to_file(path)
+                idx = self._tab_widgets.index(tree)
+                if idx != self.tab_bar.currentIndex():
+                    self.tab_bar.setCurrentIndex(idx)
+                return
+
 
 # ── Search highlight JS (injected into WebEngine pages) ───────────────────────
 
@@ -1223,9 +1264,44 @@ class PreviewPlainTextEdit(QPlainTextEdit):
 
 # ── PreviewPane ───────────────────────────────────────────────────────────────
 
+class PreviewTabBar(QTabBar):
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().x() or event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().x() or event.pixelDelta().y()
+        if delta == 0:
+            event.accept()
+            return
+        steps = max(1, min(8, abs(delta) // 120 if abs(delta) >= 120 else 1))
+        for _ in range(steps):
+            button = self._scroll_button(forward=delta < 0)
+            if button is None or not button.isEnabled():
+                break
+            button.click()
+        event.accept()
+
+    def _scroll_button(self, forward: bool) -> QToolButton | None:
+        buttons = [b for b in self.findChildren(QToolButton) if b.isVisible()]
+        if not buttons:
+            return None
+        buttons.sort(key=lambda b: b.geometry().x())
+        return buttons[-1] if forward else buttons[0]
+
+    def tabSizeHint(self, index: int) -> QSize:
+        size = super().tabSizeHint(index)
+        size.setWidth(max(size.width(), 100))
+        return size
+
+    def minimumSizeHint(self) -> QSize:
+        size = super().minimumSizeHint()
+        size.setWidth(0)
+        return size
+
+
 class PreviewPane(QWidget):
-    """右侧文件内容预览面板，含 Ctrl+F 搜索高亮。"""
+    """右侧文件内容预览面板，多标签页 + Ctrl+F 搜索高亮。"""
     path_copied = Signal(str)
+    file_tab_switched = Signal(Path)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1233,33 +1309,38 @@ class PreviewPane(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 路径标题栏
-        header = QWidget()
-        header.setObjectName("previewHeader")
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(0, 0, 0, 0)
-        self._path_lbl = QLabel("  未选择文件")
-        self._path_lbl.setObjectName("previewPath")
-        self._path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        hl.addWidget(self._path_lbl)
-        layout.addWidget(header)
+        # ── 标签栏 ──────────────────────────────────────────────────────────
+        self._tab_bar = PreviewTabBar()
+        self._tab_bar_style = HiddenTabScrollButtonStyle()
+        self._tab_bar.setStyle(self._tab_bar_style)
+        self._tab_bar.setMovable(True)
+        self._tab_bar.setDocumentMode(True)
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setUsesScrollButtons(True)
+        self._tab_bar.setElideMode(Qt.TextElideMode.ElideMiddle)
+        self._tab_bar.currentChanged.connect(self._on_tab_changed)
+        self._tab_bar.tabMoved.connect(self._on_tab_moved)
 
-        # 内容区
-        if HAS_WEBENGINE:
-            self._view = PreviewWebView()
-            self._view.path_copied.connect(self.path_copied)
-            self._view.setHtml(_EMPTY_HTML)
-            layout.addWidget(self._view, 1)
-        else:
-            self._fallback = PreviewPlainTextEdit()
-            self._fallback.path_copied.connect(self.path_copied)
-            self._fallback.setReadOnly(True)
-            self._fallback.setPlaceholderText(
-                "提示：安装 PySide6[WebEngine] 可获得 Markdown/代码高亮预览"
-            )
-            layout.addWidget(self._fallback, 1)
+        tab_header = QWidget()
+        tab_header.setObjectName("previewHeader")
+        thl = QHBoxLayout(tab_header)
+        thl.setContentsMargins(0, 0, 0, 0)
+        thl.setSpacing(0)
+        thl.addWidget(self._tab_bar, 1)
+        layout.addWidget(tab_header)
 
-        # ── 搜索栏（默认隐藏）─────────────────────────────────────────────────
+        # ── 内容区 ──────────────────────────────────────────────────────────
+        self._stack = QStackedWidget()
+        layout.addWidget(self._stack, 1)
+
+        # path → { "tab_idx": int, "view": PreviewWebView|PreviewPlainTextEdit }
+        self._tabs: dict[Path, dict] = {}
+        self._ordered_paths: list[Path] = []
+        self._current_path: Path | None = None
+        self._js_ready = False
+        self._block_tab_signal = False
+
+        # ── 搜索栏（默认隐藏）──────────────────────────────────────────────
         self._search_bar = QWidget(self)
         self._search_bar.setObjectName("searchBar")
         self._search_bar.setFixedSize(420, 36)
@@ -1299,12 +1380,140 @@ class PreviewPane(QWidget):
         close_btn.clicked.connect(self.close_search)
         sl.addWidget(close_btn)
 
-        # 信号
         self._search_input.textChanged.connect(self._search_fresh)
         self._search_input.installEventFilter(self)
 
-        self._current_path: Path | None = None
+    # ── Tab management ───────────────────────────────────────────────────────
+
+    def _create_view(self):
+        if HAS_WEBENGINE:
+            view = PreviewWebView()
+            view.path_copied.connect(self.path_copied)
+            view.setHtml(_EMPTY_HTML)
+        else:
+            view = PreviewPlainTextEdit()
+            view.path_copied.connect(self.path_copied)
+            view.setReadOnly(True)
+            view.setPlaceholderText(
+                "提示：安装 PySide6[WebEngine] 可获得 Markdown/代码高亮预览"
+            )
+        return view
+
+    def _current_view(self):
+        return self._stack.currentWidget()
+
+    def show_file(self, path: Path) -> None:
+        self._block_tab_signal = True
+        try:
+            if path in self._tabs:
+                idx = self._tab_index_for(path)
+                if idx is not None:
+                    self._tab_bar.setCurrentIndex(idx)
+                return
+
+            view = self._create_view()
+            self._tabs[path] = {"view": view}
+            self._ordered_paths.append(path)
+
+            idx = self._tab_bar.addTab(path.name)
+            self._tab_bar.setTabData(idx, path)
+            self._tab_bar.setTabToolTip(idx, str(path).replace("\\", "/"))
+            self._attach_close_btn(idx, path)
+            self._stack.addWidget(view)
+            self._tab_bar.setCurrentIndex(idx)
+
+            self._render_in_view(view, path)
+        finally:
+            self._block_tab_signal = False
+
+    def _tab_index_for(self, path: Path) -> int | None:
+        for i in range(self._tab_bar.count()):
+            if self._tab_bar.tabData(i) is path:
+                return i
+        return None
+
+    def _attach_close_btn(self, idx: int, path: Path) -> None:
+        btn = QPushButton("×")
+        btn.setObjectName("tabCloseBtn")
+        btn.setFlat(True)
+        btn.setFixedSize(15, 15)
+        btn.setToolTip("关闭")
+        btn.clicked.connect(lambda: self._close_tab(path))
+        self._tab_bar.setTabButton(idx, QTabBar.ButtonPosition.RightSide, btn)
+
+    def _close_tab(self, path: Path) -> None:
+        if path not in self._tabs:
+            return
+        info = self._tabs.pop(path)
+        view = info["view"]
+        self._ordered_paths.remove(path)
+
+        idx = self._tab_index_for(path)
+        if idx is not None:
+            self._tab_bar.removeTab(idx)
+        self._stack.removeWidget(view)
+        view.deleteLater()
+
+        if self._current_path == path:
+            self._current_path = None
+            if self._ordered_paths:
+                new_path = self._ordered_paths[-1]
+                new_idx = self._tab_index_for(new_path)
+                if new_idx is not None:
+                    self._tab_bar.setCurrentIndex(new_idx)
+            else:
+                self._js_ready = False
+
+    def _on_tab_changed(self, idx: int) -> None:
+        if idx < 0:
+            return
+        path: Path | None = self._tab_bar.tabData(idx)
+        if path is None or path not in self._tabs:
+            return
+        self._current_path = path
         self._js_ready = False
+        info = self._tabs[path]
+        self._stack.setCurrentWidget(info["view"])
+
+        if HAS_WEBENGINE and isinstance(info["view"], PreviewWebView):
+            info["view"].page().runJavaScript(_SEARCH_JS)
+            self._js_ready = True
+
+        if not getattr(self, "_block_tab_signal", False):
+            self.file_tab_switched.emit(path)
+
+    def _on_tab_moved(self, from_idx: int, to_idx: int) -> None:
+        pass  # tabData stays attached, no reordering of _ordered_paths needed
+
+    # ── File rendering ───────────────────────────────────────────────────────
+
+    def _render_in_view(self, view, path: Path) -> None:
+        self._current_path = path
+        self._js_ready = False
+        if HAS_WEBENGINE and isinstance(view, PreviewWebView):
+            view.current_path = path
+        elif isinstance(view, PreviewPlainTextEdit):
+            view.current_path = path
+
+        if self._search_bar.isVisible():
+            self.close_search()
+
+        if not HAS_WEBENGINE:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")[:200_000]
+            except Exception as e:
+                text = str(e)
+            view.setPlainText(text)
+            return
+
+        html_str, _ = render_file(path)
+        base_url = QUrl.fromLocalFile(str(path.parent) + "/")
+        view.setHtml(html_str, base_url)
+        view.loadFinished.connect(
+            lambda ok: (view.page().runJavaScript("window.scrollTo(0,0);"),
+                        self._inject_search_js()) if ok else None,
+            Qt.ConnectionType.SingleShotConnection,
+        )
 
     # ── Search ───────────────────────────────────────────────────────────────
 
@@ -1331,7 +1540,7 @@ class PreviewPane(QWidget):
         width = min(420, available)
         height = 36
         x = max(margin, self.width() - width - margin)
-        y = self._path_lbl.parentWidget().height() + margin
+        y = self._tab_bar.parentWidget().height() + margin
         self._search_bar.setFixedSize(width, height)
         self._search_bar.move(x, y)
         self._search_bar.raise_()
@@ -1349,12 +1558,13 @@ class PreviewPane(QWidget):
         self._search_count.setText("")
 
     def _js_eval(self, expr: str, callback=None) -> None:
-        if not (HAS_WEBENGINE and hasattr(self, "_view") and self._js_ready):
+        view = self._current_view()
+        if not (HAS_WEBENGINE and isinstance(view, PreviewWebView) and self._js_ready):
             return
         if callback:
-            self._view.page().runJavaScript(expr, callback)
+            view.page().runJavaScript(expr, callback)
         else:
-            self._view.page().runJavaScript(expr)
+            view.page().runJavaScript(expr)
 
     def _search_fresh(self) -> None:
         query = self._search_input.text()
@@ -1410,41 +1620,11 @@ class PreviewPane(QWidget):
         else:
             self._search_count.setText("无结果")
 
-    # ── File display ──────────────────────────────────────────────────────────
-
     def _inject_search_js(self) -> None:
-        if HAS_WEBENGINE and hasattr(self, "_view"):
-            self._view.page().runJavaScript(_SEARCH_JS)
+        view = self._current_view()
+        if HAS_WEBENGINE and isinstance(view, PreviewWebView):
+            view.page().runJavaScript(_SEARCH_JS)
             self._js_ready = True
-
-    def show_file(self, path: Path) -> None:
-        self._current_path = path
-        self._path_lbl.setText("  " + str(path).replace("\\", "/"))
-        self._js_ready = False
-        if HAS_WEBENGINE and hasattr(self, "_view"):
-            self._view.current_path = path
-        elif hasattr(self, "_fallback"):
-            self._fallback.current_path = path
-
-        if self._search_bar.isVisible():
-            self.close_search()
-
-        if not HAS_WEBENGINE:
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")[:200_000]
-            except Exception as e:
-                text = str(e)
-            self._fallback.setPlainText(text)
-            return
-
-        html_str, _ = render_file(path)
-        base_url = QUrl.fromLocalFile(str(path.parent) + "/")
-        self._view.setHtml(html_str, base_url)
-        self._view.loadFinished.connect(
-            lambda ok: (self._view.page().runJavaScript("window.scrollTo(0,0);"),
-                        self._inject_search_js()) if ok else None,
-            Qt.ConnectionType.SingleShotConnection,
-        )
 
 
 # ── MainWindow ────────────────────────────────────────────────────────────────
@@ -1488,6 +1668,7 @@ class MainWindow(QMainWindow):
         self.folder_panel.path_copied.connect(self._on_copied)
         self.folder_panel.folder_changed.connect(self._on_folder_changed)
         self.preview.path_copied.connect(self._on_copied)
+        self.preview.file_tab_switched.connect(self._on_preview_tab_switched)
 
         # 快捷键
         from PySide6.QtGui import QShortcut, QKeySequence
@@ -1607,6 +1788,9 @@ class MainWindow(QMainWindow):
             label = label[:137] + "..."
         self._status.setText(f"  ↻  已更新：{label}")
         self._fade.start()
+
+    def _on_preview_tab_switched(self, path: Path) -> None:
+        self.folder_panel.navigate_to_file(path)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
