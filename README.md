@@ -61,7 +61,7 @@ conda activate foldertree
 ### 单文件夹模式（推荐，启动快）
 
 ```powershell
-pyinstaller --noconsole --name Folder Location --add-data "icon.svg;." main.py
+pyinstaller --noconsole --name "Folder Location" --icon icon.ico --add-data "icon.svg:." main.py
 ```
 
 生成目录：`dist\Folder Location\Folder Location.exe`
@@ -69,13 +69,14 @@ pyinstaller --noconsole --name Folder Location --add-data "icon.svg;." main.py
 ### 单文件模式
 
 ```powershell
-pyinstaller --noconsole --onefile --name Folder Location --add-data "icon.svg;." main.py
+pyinstaller --noconsole --onefile --name "Folder Location" --icon icon.ico --add-data "icon.svg:." main.py
 ```
 
 生成文件：`dist\Folder Location.exe`
 
 > **注意：**
-> - `--add-data "icon.svg;."` 将图标文件打包进去（Windows 路径分隔符用 `;`）
+> - `--icon icon.ico` 设置 Windows exe 文件图标
+> - `--add-data "icon.svg:."` 将运行时使用的 SVG 图标文件打包进去
 > - 使用了 `QWebEngineView`，单文件夹模式的 `dist` 目录约 150–300 MB，属正常现象
 > - 单文件模式首次启动需要解压，速度较慢
 

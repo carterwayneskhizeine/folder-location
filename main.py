@@ -175,7 +175,8 @@ QTreeWidget::branch { background: #0d1117; }
 /* ── Search bar ── */
 #searchBar {
     background: #161b22;
-    border-top: 1px solid #30363d;
+    border: 1px solid #30363d;
+    border-radius: 4px;
 }
 #searchInput {
     background: #0d1117;
@@ -813,13 +814,14 @@ class FolderTabsPanel(QWidget):
 _SEARCH_JS = r"""
 window._searchHL = {
   marks: [], idx: -1,
+  _result(idx, total) { return { idx, total }; },
   clear() {
     this.marks.forEach(m => { const p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize(); });
     this.marks = []; this.idx = -1;
   },
   find(q) {
     this.clear();
-    if (!q) return 0;
+    if (!q) return this._result(-1, 0);
     const qL = q.toLowerCase();
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const nodes = [];
@@ -844,8 +846,7 @@ window._searchHL = {
       node.parentNode.replaceChild(frag, node);
     }
     this.marks = Array.from(document.querySelectorAll('mark[data-shl]'));
-    if (this.marks.length) this._goto(0);
-    return this.marks.length;
+    return this.marks.length ? this._goto(0) : this._result(-1, 0);
   },
   _goto(i) {
     this.marks.forEach(m => { m.style.cssText = 'background:#ff954f80;color:inherit;border-radius:2px;padding:0 1px;'; });
@@ -853,10 +854,10 @@ window._searchHL = {
     const m = this.marks[i];
     m.style.cssText = 'background:#f0883e;color:#0d1117;border-radius:2px;padding:0 1px;outline:2px solid #f0883e;';
     m.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    return [this.idx, this.marks.length];
+    return this._result(this.idx, this.marks.length);
   },
-  next() { return this.marks.length ? this._goto((this.idx + 1) % this.marks.length) : [-1, 0]; },
-  prev() { return this.marks.length ? this._goto((this.idx - 1 + this.marks.length) % this.marks.length) : [-1, 0]; },
+  next() { return this.marks.length ? this._goto((this.idx + 1) % this.marks.length) : this._result(-1, 0); },
+  prev() { return this.marks.length ? this._goto((this.idx - 1 + this.marks.length) % this.marks.length) : this._result(-1, 0); },
 };
 """
 
@@ -1017,9 +1018,9 @@ class PreviewPane(QWidget):
             layout.addWidget(self._fallback, 1)
 
         # ── 搜索栏（默认隐藏）─────────────────────────────────────────────────
-        self._search_bar = QWidget()
+        self._search_bar = QWidget(self)
         self._search_bar.setObjectName("searchBar")
-        self._search_bar.setFixedHeight(36)
+        self._search_bar.setFixedSize(420, 36)
         self._search_bar.hide()
         sl = QHBoxLayout(self._search_bar)
         sl.setContentsMargins(8, 4, 8, 4)
@@ -1056,8 +1057,6 @@ class PreviewPane(QWidget):
         close_btn.clicked.connect(self.close_search)
         sl.addWidget(close_btn)
 
-        layout.addWidget(self._search_bar)
-
         # 信号
         self._search_input.textChanged.connect(self._search_fresh)
         self._search_input.installEventFilter(self)
@@ -1080,8 +1079,25 @@ class PreviewPane(QWidget):
                     return True
         return super().eventFilter(obj, event)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_search_bar()
+
+    def _position_search_bar(self) -> None:
+        margin = 10
+        available = max(160, self.width() - margin * 2)
+        width = min(420, available)
+        height = 36
+        x = max(margin, self.width() - width - margin)
+        y = self._path_lbl.parentWidget().height() + margin
+        self._search_bar.setFixedSize(width, height)
+        self._search_bar.move(x, y)
+        self._search_bar.raise_()
+
     def open_search(self) -> None:
+        self._position_search_bar()
         self._search_bar.show()
+        self._search_bar.raise_()
         self._search_input.setFocus()
         self._search_input.selectAll()
 
@@ -1106,30 +1122,51 @@ class PreviewPane(QWidget):
             return
         js_q = json.dumps(query)
         self._js_eval(
-            f"window._searchHL ? window._searchHL.find({js_q}) : 0",
-            self._on_search_count,
+            f"JSON.stringify(window._searchHL ? window._searchHL.find({js_q}) : {{idx:-1,total:0}})",
+            self._on_nav_result,
         )
 
     def _search_nav(self, backward: bool) -> None:
         method = "prev" if backward else "next"
         self._js_eval(
-            f"window._searchHL ? window._searchHL.{method}() : [-1, 0]",
+            f"JSON.stringify(window._searchHL ? window._searchHL.{method}() : {{idx:-1,total:0}})",
             self._on_nav_result,
         )
 
-    def _on_search_count(self, total) -> None:
-        if isinstance(total, int) and total > 0:
-            self._search_count.setText(f"1/{total}")
-        else:
-            self._search_count.setText("无结果")
+    def _as_non_bool_int(self, value) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _on_nav_result(self, result) -> None:
-        if isinstance(result, list) and len(result) == 2:
-            idx, total = result
-            if total > 0 and isinstance(idx, int) and idx >= 0:
-                self._search_count.setText(f"{idx + 1}/{total}")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except json.JSONDecodeError:
+                result = None
+
+        if isinstance(result, dict):
+            idx = result.get("idx")
+            total = result.get("total")
+            idx_i = self._as_non_bool_int(idx)
+            total_i = self._as_non_bool_int(total)
+            if total_i is not None and total_i > 0 and idx_i is not None and idx_i >= 0:
+                self._search_count.setText(f"{idx_i + 1}/{total_i}")
             else:
                 self._search_count.setText("无结果")
+        elif isinstance(result, (list, tuple)) and len(result) == 2:
+            idx, total = result
+            idx_i = self._as_non_bool_int(idx)
+            total_i = self._as_non_bool_int(total)
+            if total_i is not None and total_i > 0 and idx_i is not None and idx_i >= 0:
+                self._search_count.setText(f"{idx_i + 1}/{total_i}")
+            else:
+                self._search_count.setText("无结果")
+        else:
+            self._search_count.setText("无结果")
 
     # ── File display ──────────────────────────────────────────────────────────
 
