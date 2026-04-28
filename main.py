@@ -388,6 +388,20 @@ def _build(style: str, body: str) -> str:
     return _HTML_TPL.format(style=style, body=body)
 
 
+def _normalize_selected_text(text: str) -> str:
+    return text.replace("\u2029", "\n").replace("\u2028", "\n")
+
+
+def _format_copy_path(path: Path, start_line: int | None, end_line: int | None, text: str) -> str:
+    path_text = path.as_posix()
+    if start_line is not None:
+        if end_line is None or end_line == start_line:
+            path_text += f":{start_line}"
+        else:
+            path_text += f":{start_line}-{end_line}"
+    return f"{path_text}\n```\n{text}\n```"
+
+
 def _pygments_css(cls: str = ".highlight") -> str:
     return _HtmlFmt(style="monokai").get_style_defs(cls) if HAS_PYGMENTS else ""
 
@@ -725,10 +739,127 @@ window._searchHL = {
 };
 """
 
+
+_SELECTION_INFO_JS = r"""
+(function () {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  const text = sel.toString();
+  const range = sel.getRangeAt(0);
+
+  function closestPre(node) {
+    const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    return el ? el.closest("pre") : null;
+  }
+
+  const root = closestPre(range.startContainer);
+  if (!root || root !== closestPre(range.endContainer)) {
+    return { text, startLine: null, endLine: null };
+  }
+
+  const beforeRange = document.createRange();
+  beforeRange.selectNodeContents(root);
+  beforeRange.setEnd(range.startContainer, range.startOffset);
+
+  const beforeText = beforeRange.toString();
+  const startLine = beforeText.split("\n").length;
+  const selectedForCount = text.endsWith("\n") ? text.slice(0, -1) : text;
+  const selectedLines = selectedForCount ? selectedForCount.split("\n").length : 1;
+
+  return {
+    text,
+    startLine,
+    endLine: startLine + selectedLines - 1
+  };
+})()
+"""
+
+
+class PreviewWebView(QWebEngineView if HAS_WEBENGINE else QWidget):
+    path_copied = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_path: Path | None = None
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _show_context_menu(self, pos) -> None:
+        if not self.current_path:
+            return
+
+        global_pos = self.mapToGlobal(pos)
+
+        def show_menu(info) -> None:
+            selected = self.page().selectedText()
+            if isinstance(info, dict):
+                text = _normalize_selected_text(str(info.get("text") or selected))
+                start_line = info.get("startLine")
+                end_line = info.get("endLine")
+            else:
+                text = _normalize_selected_text(selected)
+                start_line = None
+                end_line = None
+            if not text:
+                return
+            if not isinstance(start_line, int):
+                start_line = None
+            if not isinstance(end_line, int):
+                end_line = None
+
+            menu = QMenu(self)
+            copy_path = menu.addAction("Copy Path")
+            copy_text = menu.addAction("Copy")
+            action = menu.exec(global_pos)
+            if action is copy_path:
+                clip = _format_copy_path(self.current_path, start_line, end_line, text)
+                QApplication.clipboard().setText(clip)
+                self.path_copied.emit(clip)
+            elif action is copy_text:
+                QApplication.clipboard().setText(text)
+
+        self.page().runJavaScript(_SELECTION_INFO_JS, show_menu)
+
+
+class PreviewPlainTextEdit(QPlainTextEdit):
+    path_copied = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_path: Path | None = None
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _show_context_menu(self, pos) -> None:
+        cursor = self.textCursor()
+        text = _normalize_selected_text(cursor.selectedText())
+        if not self.current_path or not text:
+            return
+
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        doc = self.document()
+        start_line = doc.findBlock(start).blockNumber() + 1
+        end_pos = max(start, end - 1)
+        end_line = doc.findBlock(end_pos).blockNumber() + 1
+
+        menu = QMenu(self)
+        copy_path = menu.addAction("Copy Path")
+        copy_text = menu.addAction("Copy")
+        action = menu.exec(self.mapToGlobal(pos))
+        if action is copy_path:
+            clip = _format_copy_path(self.current_path, start_line, end_line, text)
+            QApplication.clipboard().setText(clip)
+            self.path_copied.emit(clip)
+        elif action is copy_text:
+            QApplication.clipboard().setText(text)
+
+
 # ── PreviewPane ───────────────────────────────────────────────────────────────
 
 class PreviewPane(QWidget):
     """右侧文件内容预览面板，含 Ctrl+F 搜索高亮。"""
+    path_copied = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -749,11 +880,13 @@ class PreviewPane(QWidget):
 
         # 内容区
         if HAS_WEBENGINE:
-            self._view = QWebEngineView()
+            self._view = PreviewWebView()
+            self._view.path_copied.connect(self.path_copied)
             self._view.setHtml(_EMPTY_HTML)
             layout.addWidget(self._view, 1)
         else:
-            self._fallback = QPlainTextEdit()
+            self._fallback = PreviewPlainTextEdit()
+            self._fallback.path_copied.connect(self.path_copied)
             self._fallback.setReadOnly(True)
             self._fallback.setPlaceholderText(
                 "提示：安装 PySide6[WebEngine] 可获得 Markdown/代码高亮预览"
@@ -886,6 +1019,10 @@ class PreviewPane(QWidget):
         self._current_path = path
         self._path_lbl.setText("  " + str(path).replace("\\", "/"))
         self._js_ready = False
+        if HAS_WEBENGINE and hasattr(self, "_view"):
+            self._view.current_path = path
+        elif hasattr(self, "_fallback"):
+            self._fallback.current_path = path
 
         if self._search_bar.isVisible():
             self.close_search()
@@ -947,6 +1084,7 @@ class MainWindow(QMainWindow):
 
         self.folder_panel.file_selected.connect(self.preview.show_file)
         self.folder_panel.path_copied.connect(self._on_copied)
+        self.preview.path_copied.connect(self._on_copied)
 
         # 快捷键
         from PySide6.QtGui import QShortcut, QKeySequence
@@ -1054,7 +1192,10 @@ class MainWindow(QMainWindow):
     # ── Status bar ────────────────────────────────────────────────────────────
 
     def _on_copied(self, text: str) -> None:
-        self._status.setText(f"  ✓  已复制：{text}")
+        label = text.splitlines()[0] if "\n" in text else text
+        if len(label) > 140:
+            label = label[:137] + "..."
+        self._status.setText(f"  ✓  已复制：{label}")
         self._fade.start()
 
 
