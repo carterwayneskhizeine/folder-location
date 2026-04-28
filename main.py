@@ -3,6 +3,7 @@
 import sys
 import json
 import ctypes
+import subprocess
 import html as _html
 from pathlib import Path
 
@@ -154,8 +155,8 @@ QTreeWidget::item:hover    { background: #161b22; }
 QTreeWidget::item:selected { background: #1f3a5f; color: #c9d1d9; }
 QTreeWidget::branch { background: #0d1117; }
 
-/* ── Copy button ── */
-#copyBtn {
+/* ── Tree action buttons (copy / explorer) ── */
+#treeActionBtn {
     background: #21262d;
     border: 1px solid #30363d;
     border-radius: 4px;
@@ -163,7 +164,7 @@ QTreeWidget::branch { background: #0d1117; }
     font-size: 11px;
     padding: 0 6px;
 }
-#copyBtn:hover { background: #0d2340; border-color: #58a6ff; color: #58a6ff; }
+#treeActionBtn:hover { background: #0d2340; border-color: #58a6ff; color: #58a6ff; }
 
 /* ── Preview ── */
 #previewHeader {
@@ -512,8 +513,8 @@ class FolderTree(QTreeWidget):
     file_selected = Signal(Path)
     folder_changed = Signal(str)
 
-    _BTN_W = 72
     _BTN_H = 20
+    _BTN_GAP = 4
 
     def __init__(self) -> None:
         super().__init__()
@@ -539,24 +540,38 @@ class FolderTree(QTreeWidget):
         self._refresh_timer.setInterval(120)
         self._refresh_timer.timeout.connect(self._flush_refreshes)
 
-        self._copy_btn = QPushButton("复制路径", self.viewport())
-        self._copy_btn.setObjectName("copyBtn")
-        self._copy_btn.setFixedSize(self._BTN_W, self._BTN_H)
+        self._copy_btn = QPushButton("Copy", self.viewport())
+        self._copy_btn.setObjectName("treeActionBtn")
+        self._copy_btn.setFixedHeight(self._BTN_H)
         self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._copy_btn.setToolTip("复制路径")
         self._copy_btn.hide()
         self._copy_btn.clicked.connect(self._do_copy)
+
+        self._explorer_btn = QPushButton("Open", self.viewport())
+        self._explorer_btn.setObjectName("treeActionBtn")
+        self._explorer_btn.setFixedHeight(self._BTN_H)
+        self._explorer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._explorer_btn.setToolTip("在资源管理器中打开")
+        self._explorer_btn.hide()
+        self._explorer_btn.clicked.connect(self._do_open_explorer)
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.setInterval(90)
-        self._hide_timer.timeout.connect(self._copy_btn.hide)
+        self._hide_timer.timeout.connect(self._hide_action_btns)
 
         self.viewport().installEventFilter(self)
         self._copy_btn.installEventFilter(self)
+        self._explorer_btn.installEventFilter(self)
         self.itemExpanded.connect(self._on_expanded)
         self.itemClicked.connect(self._on_item_clicked)
 
     # ── hover / copy button ───────────────────────────────────────────────────
+
+    def _hide_action_btns(self) -> None:
+        self._copy_btn.hide()
+        self._explorer_btn.hide()
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.viewport():
@@ -569,15 +584,17 @@ class FolderTree(QTreeWidget):
                         self._reposition()
                         self._hide_timer.stop()
                         self._copy_btn.show()
+                        self._explorer_btn.show()
                     else:
                         self._hide_timer.start()
             elif t == QEvent.Type.Leave:
                 self._hide_timer.start()
-        elif obj is self._copy_btn:
+        elif obj in (self._copy_btn, self._explorer_btn):
             t = event.type()
             if t == QEvent.Type.Enter:
                 self._hide_timer.stop()
                 self._copy_btn.show()
+                self._explorer_btn.show()
             elif t == QEvent.Type.Leave:
                 self._hovered = None
                 self._hide_timer.start()
@@ -587,9 +604,14 @@ class FolderTree(QTreeWidget):
         if not self._hovered:
             return
         rect = self.visualItemRect(self._hovered)
-        x = self.viewport().width() - self._BTN_W - 6
+        right = self.viewport().width() - 6
         y = rect.top() + (rect.height() - self._BTN_H) // 2
-        self._copy_btn.move(x, y)
+        # explorer button on the right, copy button to its left
+        ex_w = self._explorer_btn.width()
+        cp_w = self._copy_btn.width()
+        self._explorer_btn.move(right - ex_w, y)
+        self._explorer_btn.raise_()
+        self._copy_btn.move(right - ex_w - self._BTN_GAP - cp_w, y)
         self._copy_btn.raise_()
 
     def _do_copy(self) -> None:
@@ -602,6 +624,20 @@ class FolderTree(QTreeWidget):
             QApplication.clipboard().setText(text)
             self.path_copied.emit(text)
 
+    def _do_open_explorer(self) -> None:
+        item = self._hovered
+        if not item:
+            return
+        p: Path | None = item.data(0, _PATH_ROLE)
+        if p and p.exists():
+            subprocess.Popen(f'explorer /select,"{p}"')
+        else:
+            raw: str = item.data(0, _DIR_ROLE) or ""
+            if raw:
+                folder = Path(raw)
+                if folder.exists():
+                    subprocess.Popen(f'explorer "{folder}"')
+
     def _on_item_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         if not item.data(0, _IS_DIR):
             p: Path | None = item.data(0, _PATH_ROLE)
@@ -613,6 +649,7 @@ class FolderTree(QTreeWidget):
     def load_folder(self, folder: Path, display_root: str) -> None:
         self.clear()
         self._copy_btn.hide()
+        self._explorer_btn.hide()
         self._hovered = None
         self._root_path = folder
         self._root_parent = folder.parent
