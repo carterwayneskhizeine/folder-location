@@ -285,6 +285,9 @@ def _load_icon() -> QIcon:
 
 def _enable_dark_titlebar(hwnd: int) -> None:
     """Windows 10/11 深色标题栏，激活时也保持灰色。"""
+    if sys.platform != "win32" or not hwnd:
+        return
+
     dwm = ctypes.windll.dwmapi.DwmSetWindowAttribute
     dwm.argtypes = [
         ctypes.c_void_p,   # HWND
@@ -306,6 +309,13 @@ def _enable_dark_titlebar(hwnd: int) -> None:
     text    = ctypes.c_uint32(0x00D9D1C9)  # #c9d1d9
     dwm(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
     dwm(hwnd, 36, ctypes.byref(text),    ctypes.sizeof(text))
+
+
+def _apply_dark_titlebar(widget: QWidget) -> None:
+    try:
+        _enable_dark_titlebar(int(widget.winId()))
+    except Exception:
+        pass
 
 
 def _file_icon(name: str) -> str:
@@ -1946,13 +1956,18 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.activateWindow()
         self.raise_()
+        _apply_dark_titlebar(self)
         self._update_tray_menu()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not getattr(self, '_titlebar_fixed', False):
-            self._titlebar_fixed = True
-            _enable_dark_titlebar(int(self.winId()))
+        _apply_dark_titlebar(self)
+        QTimer.singleShot(0, lambda: _apply_dark_titlebar(self))
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.ActivationChange, QEvent.Type.WindowStateChange):
+            QTimer.singleShot(0, lambda: _apply_dark_titlebar(self))
 
     def _quit(self) -> None:
         self._quitting = True
