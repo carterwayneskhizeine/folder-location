@@ -10,9 +10,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QTabBar, QSplitter, QFileDialog, QPlainTextEdit,
-    QSystemTrayIcon, QMenu, QStackedWidget,
+    QSystemTrayIcon, QMenu, QStackedWidget, QToolButton,
+    QProxyStyle, QStyle,
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize
+from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize, QFileSystemWatcher
 from PySide6.QtGui import QColor, QPalette, QIcon, QAction
 
 try:
@@ -92,6 +93,24 @@ QTabBar::tab:selected {
 }
 QTabBar::tab:!selected { margin-top: 2px; }
 QTabBar::tab:hover:!selected { background: #21262d; color: #c9d1d9; }
+QTabBar QToolButton {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    max-width: 0;
+    min-height: 0;
+    max-height: 0;
+    width: 0;
+    height: 0;
+}
+QTabBar QToolButton::left-arrow,
+QTabBar QToolButton::right-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+}
 
 /* ── Buttons ── */
 #addFolderBtn {
@@ -491,6 +510,7 @@ def render_file(path: Path) -> tuple[str, bool]:
 class FolderTree(QTreeWidget):
     path_copied   = Signal(str)
     file_selected = Signal(Path)
+    folder_changed = Signal(str)
 
     _BTN_W = 72
     _BTN_H = 20
@@ -506,6 +526,18 @@ class FolderTree(QTreeWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         self._hovered: QTreeWidgetItem | None = None
+        self._root_path: Path | None = None
+        self._root_parent: Path | None = None
+        self._root_exists = False
+        self._pending_refresh: set[str] = set()
+
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_directory_changed)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(120)
+        self._refresh_timer.timeout.connect(self._flush_refreshes)
 
         self._copy_btn = QPushButton("复制路径", self.viewport())
         self._copy_btn.setObjectName("copyBtn")
@@ -582,6 +614,10 @@ class FolderTree(QTreeWidget):
         self.clear()
         self._copy_btn.hide()
         self._hovered = None
+        self._root_path = folder
+        self._root_parent = folder.parent
+        self._root_exists = folder.is_dir()
+        self._reset_watcher()
 
         root = QTreeWidgetItem(self)
         root.setText(0, "📂  " + folder.name)
@@ -595,11 +631,16 @@ class FolderTree(QTreeWidget):
 
         self._fill(root, folder, display_root)
         root.setExpanded(True)
+        self._watch_dir(folder)
+        self._watch_dir(folder.parent)
 
     def _fill(self, parent: QTreeWidgetItem, folder: Path, parent_disp: str) -> None:
+        if not folder.is_dir():
+            return
+        self._watch_dir(folder)
         try:
             entries = sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except PermissionError:
+        except OSError:
             return
         for entry in entries:
             disp = parent_disp + "/" + entry.name
@@ -607,13 +648,14 @@ class FolderTree(QTreeWidget):
             child.setData(0, _DIR_ROLE, disp)
             child.setData(0, _PATH_ROLE, entry)
             if entry.is_dir():
+                self._watch_dir(entry)
                 child.setText(0, "📁  " + entry.name)
                 child.setData(0, _IS_DIR, True)
                 child.setForeground(0, QColor("#79c0ff"))
                 try:
                     if any(entry.iterdir()):
                         QTreeWidgetItem(child).setText(0, _PLACEHOLDER)
-                except PermissionError:
+                except OSError:
                     pass
             else:
                 child.setText(0, _file_icon(entry.name) + entry.name)
@@ -628,6 +670,132 @@ class FolderTree(QTreeWidget):
         if folder:
             self._fill(item, folder, disp)
 
+    # ── file system updates ──────────────────────────────────────────────────
+
+    def _reset_watcher(self) -> None:
+        paths = self._watcher.directories()
+        if paths:
+            self._watcher.removePaths(paths)
+        self._pending_refresh.clear()
+
+    def _watch_dir(self, folder: Path) -> None:
+        if not folder.is_dir():
+            return
+        path = str(folder)
+        if path not in self._watcher.directories():
+            self._watcher.addPath(path)
+
+    def _on_directory_changed(self, path: str) -> None:
+        self._pending_refresh.add(path)
+        self._refresh_timer.start()
+
+    def _flush_refreshes(self) -> None:
+        paths = list(self._pending_refresh)
+        self._pending_refresh.clear()
+        for path in paths:
+            changed = Path(path)
+            if self._root_parent and changed == self._root_parent:
+                self._refresh_root_if_needed()
+                continue
+            self._refresh_changed_dir(changed)
+        self._reposition()
+
+    def _refresh_root_if_needed(self) -> None:
+        if not self._root_path:
+            return
+        exists = self._root_path.is_dir()
+        if exists != self._root_exists:
+            self._root_exists = exists
+            root = self.topLevelItem(0) if self.topLevelItemCount() else None
+            if root:
+                self._refresh_item(root)
+
+    def _refresh_changed_dir(self, folder: Path) -> None:
+        item = self._find_dir_item(folder)
+        if item is None:
+            if self._root_path and folder == self._root_path:
+                root = self.topLevelItem(0) if self.topLevelItemCount() else None
+                if root:
+                    self._refresh_item(root)
+            return
+        self._refresh_item(item)
+
+    def _refresh_item(self, item: QTreeWidgetItem) -> None:
+        folder: Path | None = item.data(0, _PATH_ROLE)
+        disp: str = item.data(0, _DIR_ROLE) or ""
+        if folder is None:
+            return
+
+        if not folder.is_dir():
+            parent = item.parent()
+            if parent is not None:
+                self._refresh_item(parent)
+                return
+            self._root_exists = False
+            item.takeChildren()
+            item.setText(0, "📂  " + folder.name + "  (已删除)")
+            item.setForeground(0, QColor("#f85149"))
+            self.folder_changed.emit(disp or str(folder))
+            return
+
+        if item.parent() is None:
+            self._root_exists = True
+        expanded = self._expanded_dir_paths(item)
+        was_expanded = item.isExpanded()
+        item.takeChildren()
+        if item.parent() is None:
+            item.setText(0, "📂  " + folder.name)
+            item.setForeground(0, QColor("#79c0ff"))
+        self._fill(item, folder, disp)
+        self._restore_expanded_dirs(item, expanded)
+        item.setExpanded(was_expanded or item.parent() is None)
+        self._watch_dir(folder)
+        self.folder_changed.emit(disp or str(folder))
+
+    def _expanded_dir_paths(self, item: QTreeWidgetItem) -> set[Path]:
+        result: set[Path] = set()
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.data(0, _IS_DIR) and child.isExpanded():
+                path: Path | None = child.data(0, _PATH_ROLE)
+                if path is not None:
+                    result.add(path)
+                result.update(self._expanded_dir_paths(child))
+        return result
+
+    def _restore_expanded_dirs(self, item: QTreeWidgetItem, expanded: set[Path]) -> None:
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if not child.data(0, _IS_DIR):
+                continue
+            path: Path | None = child.data(0, _PATH_ROLE)
+            if path not in expanded:
+                continue
+            if child.childCount() == 1 and child.child(0).text(0) == _PLACEHOLDER:
+                child.removeChild(child.child(0))
+                disp: str = child.data(0, _DIR_ROLE) or ""
+                if path is not None:
+                    self._fill(child, path, disp)
+            child.setExpanded(True)
+            self._restore_expanded_dirs(child, expanded)
+
+    def _find_dir_item(self, folder: Path) -> QTreeWidgetItem | None:
+        def walk(item: QTreeWidgetItem) -> QTreeWidgetItem | None:
+            item_path: Path | None = item.data(0, _PATH_ROLE)
+            if item.data(0, _IS_DIR) and item_path == folder:
+                return item
+            for i in range(item.childCount()):
+                found = walk(item.child(i))
+                if found is not None:
+                    return found
+            return None
+
+        for i in range(self.topLevelItemCount()):
+            found = walk(self.topLevelItem(i))
+            if found is not None:
+                return found
+        return None
+
 
 # ── FolderTabsPanel ───────────────────────────────────────────────────────────
 
@@ -635,6 +803,29 @@ _ADD_FOLDER_TAB = "__add_folder_tab__"
 
 
 class FolderTabBar(QTabBar):
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().x() or event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().x() or event.pixelDelta().y()
+        if delta == 0:
+            event.accept()
+            return
+
+        steps = max(1, min(8, abs(delta) // 120 if abs(delta) >= 120 else 1))
+        for _ in range(steps):
+            button = self._scroll_button(forward=delta < 0)
+            if button is None or not button.isEnabled():
+                break
+            button.click()
+        event.accept()
+
+    def _scroll_button(self, forward: bool) -> QToolButton | None:
+        buttons = [b for b in self.findChildren(QToolButton) if b.isVisible()]
+        if not buttons:
+            return None
+        buttons.sort(key=lambda b: b.geometry().x())
+        return buttons[-1] if forward else buttons[0]
+
     def tabSizeHint(self, index: int) -> QSize:
         size = super().tabSizeHint(index)
         if self.tabData(index) == _ADD_FOLDER_TAB:
@@ -647,11 +838,22 @@ class FolderTabBar(QTabBar):
         return size
 
 
+class HiddenTabScrollButtonStyle(QProxyStyle):
+    def pixelMetric(self, metric, option=None, widget=None) -> int:
+        if metric in (
+            QStyle.PixelMetric.PM_TabBarScrollButtonWidth,
+            QStyle.PixelMetric.PM_TabBar_ScrollButtonOverlap,
+        ):
+            return 0
+        return super().pixelMetric(metric, option, widget)
+
+
 class FolderTabsPanel(QWidget):
     """左侧多文件夹标签页面板。"""
 
     file_selected = Signal(Path)
     path_copied   = Signal(str)
+    folder_changed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -666,10 +868,12 @@ class FolderTabsPanel(QWidget):
         header_layout.setSpacing(0)
 
         self.tab_bar = FolderTabBar()
+        self._tab_bar_style = HiddenTabScrollButtonStyle()
+        self.tab_bar.setStyle(self._tab_bar_style)
         self.tab_bar.setMovable(True)
         self.tab_bar.setDocumentMode(True)
         self.tab_bar.setExpanding(False)
-        self.tab_bar.setUsesScrollButtons(False)
+        self.tab_bar.setUsesScrollButtons(True)
         self.tab_bar.currentChanged.connect(self._on_current_changed)
         self.tab_bar.tabBarClicked.connect(self._on_tab_clicked)
         self.tab_bar.tabMoved.connect(self._on_tab_moved)
@@ -771,6 +975,7 @@ class FolderTabsPanel(QWidget):
         tree = FolderTree()
         tree.file_selected.connect(self.file_selected)
         tree.path_copied.connect(self.path_copied)
+        tree.folder_changed.connect(self.folder_changed)
 
         self._remove_control_tabs()
         idx = self.tab_bar.addTab(p.name)
@@ -1244,6 +1449,7 @@ class MainWindow(QMainWindow):
 
         self.folder_panel.file_selected.connect(self.preview.show_file)
         self.folder_panel.path_copied.connect(self._on_copied)
+        self.folder_panel.folder_changed.connect(self._on_folder_changed)
         self.preview.path_copied.connect(self._on_copied)
 
         # 快捷键
@@ -1356,6 +1562,13 @@ class MainWindow(QMainWindow):
         if len(label) > 140:
             label = label[:137] + "..."
         self._status.setText(f"  ✓  已复制：{label}")
+        self._fade.start()
+
+    def _on_folder_changed(self, path: str) -> None:
+        label = path.replace("\\", "/")
+        if len(label) > 140:
+            label = label[:137] + "..."
+        self._status.setText(f"  ↻  已更新：{label}")
         self._fade.start()
 
 
