@@ -20,6 +20,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QPalette, QIcon, QAction
 
+from browser_panel import BrowserPanel
+
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
     HAS_WEBENGINE = True
@@ -179,6 +181,39 @@ QTreeWidget::branch { background: #0d1117; }
 #previewHeader {
     background: #161b22;
     border-bottom: 1px solid #30363d;
+}
+
+/* ── Browser ── */
+#browserToolbar {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+}
+#browserNavBtn {
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    color: #c9d1d9;
+    font-size: 13px;
+    padding: 2px 8px;
+    min-width: 30px;
+}
+#browserNavBtn:hover { background: #30363d; border-color: #484f58; }
+#browserNavBtn:pressed { background: #0d2340; border-color: #58a6ff; }
+#browserNavBtn:disabled { color: #484f58; background: #161b22; }
+#browserUrlInput {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 14px;
+    color: #c9d1d9;
+    font-size: 13px;
+    padding: 4px 12px;
+    min-height: 26px;
+}
+#browserUrlInput:focus { border-color: #58a6ff; }
+#browserFallback {
+    background: #0d1117;
+    color: #8b949e;
+    font-size: 14px;
 }
 
 /* ── Status ── */
@@ -514,6 +549,11 @@ def render_file(path: Path) -> tuple[str, bool]:
     """
     ext = path.suffix.lower().lstrip(".")
 
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        return _build(_PLAIN_CSS, f"<pre>读取失败：{_html.escape(str(e))}</pre>"), False
+
     # ── Images ────────────────────────────────────────────────────────────────
     if ext in _IMG_EXTS:
         url = QUrl.fromLocalFile(str(path)).toString()
@@ -521,11 +561,6 @@ def render_file(path: Path) -> tuple[str, bool]:
         return _build(_IMG_CSS, img_body), False
 
     # ── Read text ─────────────────────────────────────────────────────────────
-    try:
-        size = path.stat().st_size
-    except OSError as e:
-        return _build(_PLAIN_CSS, f"<pre>读取失败：{_html.escape(str(e))}</pre>"), False
-
     if size > _MAX_FILE_BYTES:
         return _build(_PLAIN_CSS, "<pre>文件太大，无法预览（超过 2 MB）</pre>"), False
 
@@ -604,6 +639,7 @@ class FolderTree(QTreeWidget):
 
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
+        self._watcher.fileChanged.connect(self._on_tree_file_changed)
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -767,6 +803,7 @@ class FolderTree(QTreeWidget):
                 except OSError:
                     pass
             else:
+                self._watch_file(entry)
                 child.setText(0, _file_icon(entry.name) + entry.name)
                 child.setForeground(0, QColor("#c9d1d9"))
 
@@ -785,6 +822,9 @@ class FolderTree(QTreeWidget):
         paths = self._watcher.directories()
         if paths:
             self._watcher.removePaths(paths)
+        files = self._watcher.files()
+        if files:
+            self._watcher.removePaths(files)
         self._pending_refresh.clear()
 
     def _watch_dir(self, folder: Path) -> None:
@@ -794,8 +834,19 @@ class FolderTree(QTreeWidget):
         if path not in self._watcher.directories():
             self._watcher.addPath(path)
 
+    def _watch_file(self, file_path: Path) -> None:
+        if not file_path.is_file():
+            return
+        path = str(file_path)
+        if path not in self._watcher.files():
+            self._watcher.addPath(path)
+
     def _on_directory_changed(self, path: str) -> None:
         self._pending_refresh.add(path)
+        self._refresh_timer.start()
+
+    def _on_tree_file_changed(self, path: str) -> None:
+        self._pending_refresh.add(str(Path(path).parent))
         self._refresh_timer.start()
 
     def _flush_refreshes(self) -> None:
@@ -1522,6 +1573,13 @@ class PreviewPane(QWidget):
         thl.setContentsMargins(0, 0, 0, 0)
         thl.setSpacing(0)
         thl.addWidget(self._tab_bar, 1)
+
+        self._add_browser_btn = QPushButton("+")
+        self._add_browser_btn.setObjectName("addFolderBtn")
+        self._add_browser_btn.setFlat(True)
+        self._add_browser_btn.setToolTip("打开浏览器")
+        self._add_browser_btn.clicked.connect(self.open_browser)
+        thl.addWidget(self._add_browser_btn)
         layout.addWidget(tab_header)
 
         # ── 内容区 ──────────────────────────────────────────────────────────
@@ -1531,9 +1589,20 @@ class PreviewPane(QWidget):
         # path → { "tab_idx": int, "view": PreviewWebView|PreviewPlainTextEdit }
         self._tabs: dict[Path, dict] = {}
         self._ordered_paths: list[Path] = []
+        self._browser_tabs: list[BrowserPanel] = []
         self._current_path: Path | None = None
         self._js_ready = False
         self._block_tab_signal = False
+        self._pending_preview_refresh: set[Path] = set()
+
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.fileChanged.connect(self._on_preview_file_changed)
+        self._watcher.directoryChanged.connect(self._on_preview_dir_changed)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(120)
+        self._refresh_timer.timeout.connect(self._flush_preview_refreshes)
 
         # ── 搜索栏（默认隐藏）──────────────────────────────────────────────
         self._search_bar = QWidget(self)
@@ -1597,6 +1666,39 @@ class PreviewPane(QWidget):
     def _current_view(self):
         return self._stack.currentWidget()
 
+    def open_browser(self, url: str | None = None) -> BrowserPanel:
+        browser = BrowserPanel(url)
+        self._add_browser_tab(browser, url or "浏览器", focus_address=True)
+        return browser
+
+    def _add_browser_tab(
+        self,
+        browser: BrowserPanel,
+        tooltip: str = "浏览器",
+        *,
+        focus_address: bool = False,
+    ) -> None:
+        if browser in self._browser_tabs:
+            return
+
+        self._browser_tabs.append(browser)
+
+        idx = self._tab_bar.addTab("浏览器")
+        self._tab_bar.setTabData(idx, browser)
+        self._tab_bar.setTabToolTip(idx, tooltip)
+        self._attach_browser_close_btn(idx, browser)
+        self._stack.addWidget(browser)
+        self._tab_bar.setCurrentIndex(idx)
+
+        browser.title_changed.connect(lambda title, b=browser: self._update_browser_tab_title(b, title))
+        browser.url_changed.connect(lambda current_url, b=browser: self._update_browser_tab_url(b, current_url))
+        browser.popup_created.connect(self._on_browser_popup_created)
+        if focus_address:
+            browser.focus_address_bar()
+
+    def _on_browser_popup_created(self, browser: BrowserPanel) -> None:
+        self._add_browser_tab(browser, "浏览器弹窗")
+
     def show_file(self, path: Path) -> None:
         self._block_tab_signal = True
         try:
@@ -1618,12 +1720,19 @@ class PreviewPane(QWidget):
             self._tab_bar.setCurrentIndex(idx)
 
             self._render_in_view(view, path)
+            self._sync_preview_watches()
         finally:
             self._block_tab_signal = False
 
     def _tab_index_for(self, path: Path) -> int | None:
         for i in range(self._tab_bar.count()):
-            if self._tab_bar.tabData(i) is path:
+            if self._tab_bar.tabData(i) == path:
+                return i
+        return None
+
+    def _tab_index_for_browser(self, browser: BrowserPanel) -> int | None:
+        for i in range(self._tab_bar.count()):
+            if self._tab_bar.tabData(i) is browser:
                 return i
         return None
 
@@ -1634,6 +1743,15 @@ class PreviewPane(QWidget):
         btn.setFixedSize(15, 15)
         btn.setToolTip("关闭")
         btn.clicked.connect(lambda: self._close_tab(path))
+        self._tab_bar.setTabButton(idx, QTabBar.ButtonPosition.RightSide, btn)
+
+    def _attach_browser_close_btn(self, idx: int, browser: BrowserPanel) -> None:
+        btn = QPushButton("×")
+        btn.setObjectName("tabCloseBtn")
+        btn.setFlat(True)
+        btn.setFixedSize(15, 15)
+        btn.setToolTip("关闭")
+        btn.clicked.connect(lambda: self._close_browser_tab(browser))
         self._tab_bar.setTabButton(idx, QTabBar.ButtonPosition.RightSide, btn)
 
     def _close_tab(self, path: Path) -> None:
@@ -1648,6 +1766,7 @@ class PreviewPane(QWidget):
             self._tab_bar.removeTab(idx)
         self._stack.removeWidget(view)
         view.deleteLater()
+        self._sync_preview_watches()
 
         if self._current_path == path:
             self._current_path = None
@@ -1659,10 +1778,50 @@ class PreviewPane(QWidget):
             else:
                 self._js_ready = False
 
+    def _close_browser_tab(self, browser: BrowserPanel) -> None:
+        if browser not in self._browser_tabs:
+            return
+        was_current = self._current_view() is browser
+        self._browser_tabs.remove(browser)
+
+        idx = self._tab_index_for_browser(browser)
+        if idx is not None:
+            self._tab_bar.removeTab(idx)
+        self._stack.removeWidget(browser)
+        browser.deleteLater()
+
+        if was_current and self._tab_bar.currentIndex() < 0:
+            self._current_path = None
+            self._js_ready = False
+
+    def _update_browser_tab_title(self, browser: BrowserPanel, title: str) -> None:
+        idx = self._tab_index_for_browser(browser)
+        if idx is None:
+            return
+        clean = (title or "浏览器").strip() or "浏览器"
+        if len(clean) > 24:
+            clean = clean[:21] + "..."
+        self._tab_bar.setTabText(idx, clean)
+
+    def _update_browser_tab_url(self, browser: BrowserPanel, url: str) -> None:
+        idx = self._tab_index_for_browser(browser)
+        if idx is None:
+            return
+        self._tab_bar.setTabToolTip(idx, url or "浏览器")
+
     def _on_tab_changed(self, idx: int) -> None:
         if idx < 0:
             return
-        path: Path | None = self._tab_bar.tabData(idx)
+        data = self._tab_bar.tabData(idx)
+        if isinstance(data, BrowserPanel):
+            self._current_path = None
+            self._js_ready = False
+            self._stack.setCurrentWidget(data)
+            if self._search_bar.isVisible():
+                self.close_search()
+            return
+
+        path: Path | None = data
         if path is None or path not in self._tabs:
             return
         self._current_path = path
@@ -1686,9 +1845,10 @@ class PreviewPane(QWidget):
 
     # ── File rendering ───────────────────────────────────────────────────────
 
-    def _render_in_view(self, view, path: Path) -> None:
-        self._current_path = path
-        self._js_ready = False
+    def _render_in_view(self, view, path: Path, *, activate: bool = True) -> None:
+        if activate:
+            self._current_path = path
+            self._js_ready = False
         if HAS_WEBENGINE and isinstance(view, PreviewWebView):
             view.current_path = path
             # 先设置深色背景，避免加载时闪白
@@ -1696,7 +1856,7 @@ class PreviewPane(QWidget):
         elif isinstance(view, PreviewPlainTextEdit):
             view.current_path = path
 
-        if self._search_bar.isVisible():
+        if activate and self._search_bar.isVisible():
             self.close_search()
 
         if not HAS_WEBENGINE:
@@ -1715,9 +1875,68 @@ class PreviewPane(QWidget):
             if ok:
                 view.page().runJavaScript("window.scrollTo(0,0);")
                 # 延迟注入 JS，确保 DOM 完全渲染
-                QTimer.singleShot(100, self._inject_search_js)
+                if activate:
+                    QTimer.singleShot(100, self._inject_search_js)
+                else:
+                    QTimer.singleShot(100, lambda: view.page().runJavaScript(_SEARCH_JS))
 
         view.loadFinished.connect(on_loaded, Qt.ConnectionType.SingleShotConnection)
+
+    # ── File system updates ──────────────────────────────────────────────────
+
+    def _sync_preview_watches(self) -> None:
+        files = self._watcher.files()
+        dirs = self._watcher.directories()
+        if files:
+            self._watcher.removePaths(files)
+        if dirs:
+            self._watcher.removePaths(dirs)
+
+        file_paths: list[str] = []
+        dir_paths: list[str] = []
+        for path in self._ordered_paths:
+            parent = path.parent
+            if parent.is_dir():
+                dir_paths.append(str(parent))
+            if path.is_file():
+                file_paths.append(str(path))
+
+        if dir_paths:
+            self._watcher.addPaths(sorted(set(dir_paths)))
+        if file_paths:
+            self._watcher.addPaths(sorted(set(file_paths)))
+
+    def _queue_preview_refresh(self, path: Path) -> None:
+        if path in self._tabs:
+            self._pending_preview_refresh.add(path)
+            self._refresh_timer.start()
+
+    def _on_preview_file_changed(self, path: str) -> None:
+        self._queue_preview_refresh(Path(path))
+
+    def _on_preview_dir_changed(self, path: str) -> None:
+        changed_dir = Path(path)
+        for opened in self._ordered_paths:
+            if opened.parent == changed_dir:
+                self._queue_preview_refresh(opened)
+
+    def _flush_preview_refreshes(self) -> None:
+        paths = list(self._pending_preview_refresh)
+        self._pending_preview_refresh.clear()
+
+        current = self._current_path
+        for path in paths:
+            info = self._tabs.get(path)
+            if not info:
+                continue
+            is_current = path == current
+            self._render_in_view(info["view"], path, activate=is_current)
+            idx = self._tab_index_for(path)
+            if idx is not None:
+                self._tab_bar.setTabText(idx, path.name)
+                self._tab_bar.setTabToolTip(idx, str(path).replace("\\", "/"))
+
+        self._sync_preview_watches()
 
     # ── Search ───────────────────────────────────────────────────────────────
 
@@ -1836,6 +2055,10 @@ class PreviewPane(QWidget):
         """返回当前所有标签页的文件路径。"""
         return [str(p) for p in self._ordered_paths]
 
+    def browser_urls(self) -> list[str]:
+        """返回当前所有浏览器标签页的网址。"""
+        return [browser.current_url() for browser in self._browser_tabs if browser.current_url()]
+
     def restore_tabs(self, paths: list[str]) -> None:
         """恢复之前打开的文件标签页。"""
         self._block_tab_signal = True
@@ -1852,10 +2075,17 @@ class PreviewPane(QWidget):
                     self._attach_close_btn(idx, path)
                     self._stack.addWidget(view)
                     self._render_in_view(view, path)
+            self._sync_preview_watches()
             if self._ordered_paths:
                 self._tab_bar.setCurrentIndex(0)
         finally:
             self._block_tab_signal = False
+
+    def restore_browser_tabs(self, urls: list[str]) -> None:
+        """恢复之前打开的浏览器标签页。"""
+        for url in urls or []:
+            if isinstance(url, str) and url.strip():
+                self.open_browser(url)
 
 
 # ── MainWindow ────────────────────────────────────────────────────────────────
@@ -1997,6 +2227,7 @@ class MainWindow(QMainWindow):
         s.setValue("session/folders",  self.folder_panel.open_paths())
         s.setValue("session/last_dir", self.folder_panel._last_dir)
         s.setValue("session/preview_files", self.preview.open_paths())
+        s.setValue("session/browser_urls", self.preview.browser_urls())
 
     def restore_session(self) -> None:
         s = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
@@ -2015,6 +2246,12 @@ class MainWindow(QMainWindow):
             preview_paths = [preview_paths] if preview_paths else []
         if preview_paths:
             self.preview.restore_tabs(preview_paths)
+
+        browser_urls = s.value("session/browser_urls", [])
+        if isinstance(browser_urls, str):
+            browser_urls = [browser_urls] if browser_urls else []
+        if browser_urls:
+            self.preview.restore_browser_tabs(browser_urls)
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
