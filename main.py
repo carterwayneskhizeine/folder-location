@@ -14,7 +14,10 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon, QMenu, QStackedWidget, QToolButton,
     QProxyStyle, QStyle,
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize, QFileSystemWatcher
+from PySide6.QtCore import (
+    Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize, QFileSystemWatcher,
+    QObject, Slot,
+)
 from PySide6.QtGui import QColor, QPalette, QIcon, QAction
 
 try:
@@ -22,6 +25,12 @@ try:
     HAS_WEBENGINE = True
 except ImportError:
     HAS_WEBENGINE = False
+
+try:
+    from PySide6.QtWebChannel import QWebChannel
+    HAS_WEBCHANNEL = True
+except ImportError:
+    HAS_WEBCHANNEL = False
 
 try:
     import markdown as _md
@@ -424,28 +433,25 @@ def _wrap_code_blocks(html: str, wrap_class: str = "code-wrapper") -> str:
     """为代码块添加包裹层和复制按钮。"""
     import re
 
-    def wrap_highlight(match):
-        content = match.group(0)
-        return f'<div class="{wrap_class}">{content}<button class="code-copy-btn">Copy</button></div>'
+    placeholder = "\x00WRAP\x00"
+    wraps: list[str] = []
 
-    # 匹配 .highlight 容器（Pygments 生成的代码块）
-    html = re.sub(r'<div class="highlight">.*?</div>', wrap_highlight, html, flags=re.DOTALL)
+    def _store(m):
+        wraps.append(f'<div class="{wrap_class}">{m.group(0)}<button class="code-copy-btn">Copy</button></div>')
+        return placeholder + str(len(wraps) - 1) + placeholder
 
-    # 匹配 table.highlighttable（带行号的 Pygments 代码块）
-    html = re.sub(
-        r'<table class="highlighttable">.*?</table>',
-        lambda m: f'<div class="{wrap_class}">{m.group(0)}<button class="code-copy-btn">Copy</button></div>',
-        html,
-        flags=re.DOTALL,
-    )
+    # 1) table.highlighttable（带行号的 Pygments 代码块）
+    html = re.sub(r'<table class="highlighttable">.+?</table>', _store, html, flags=re.DOTALL)
 
-    # 匹配 .codehilite（markdown codehilite）
-    html = re.sub(
-        r'<div class="codehilite">.*?</div>',
-        lambda m: f'<div class="{wrap_class}">{m.group(0)}<button class="code-copy-btn">Copy</button></div>',
-        html,
-        flags=re.DOTALL,
-    )
+    # 2) .codehilite（markdown codehilite）
+    html = re.sub(r'<div class="codehilite">.+?</div>', _store, html, flags=re.DOTALL)
+
+    # 3) .highlight（Pygments 无行号 — 此时 table 内的已被替换为 placeholder，不会重复匹配）
+    html = re.sub(r'<div class="highlight">.+?</div>', _store, html, flags=re.DOTALL)
+
+    # 还原 placeholder
+    for i, w in enumerate(wraps):
+        html = html.replace(placeholder + str(i) + placeholder, w)
 
     return html
 
@@ -677,6 +683,8 @@ class FolderTree(QTreeWidget):
             text = "@" + raw.replace("\\", "/")
             QApplication.clipboard().setText(text)
             self.path_copied.emit(text)
+            self._copy_btn.setText("OK")
+            QTimer.singleShot(900, lambda: self._copy_btn.setText("Copy"))
 
     def _do_open_explorer(self) -> None:
         item = self._hovered
@@ -1209,10 +1217,61 @@ window._searchHL = {
     const table = wrapper.querySelector('table.highlighttable');
     if (table) {
       const codeCell = table.querySelector('td.code .highlight pre, td.code pre');
-      return codeCell ? codeCell.textContent : '';
+      if (codeCell) return codeCell.textContent;
     }
+    const highlight = wrapper.querySelector('.highlight pre, .highlight');
+    if (highlight) return highlight.textContent;
+    const codehilite = wrapper.querySelector('.codehilite pre, .codehilite');
+    if (codehilite) return codehilite.textContent;
     const pre = wrapper.querySelector('pre');
     return pre ? pre.textContent : '';
+  }
+  function copyText(text) {
+    function fallbackCopy() {
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+      }
+      return legacyCopy(text);
+    }
+    return getClipboardBridge().then(bridge => {
+      if (!bridge || !bridge.copyText) return fallbackCopy();
+      return new Promise((resolve, reject) => {
+        bridge.copyText(text, ok => ok ? resolve() : fallbackCopy().then(resolve, reject));
+      });
+    });
+  }
+  function getClipboardBridge() {
+    if (window._qtClipboardBridge) return Promise.resolve(window._qtClipboardBridge);
+    if (!window.qt || !qt.webChannelTransport) return Promise.resolve(null);
+    if (window._qtClipboardBridgePromise) return window._qtClipboardBridgePromise;
+    window._qtClipboardBridgePromise = new Promise(resolve => {
+      const init = () => {
+        new QWebChannel(qt.webChannelTransport, channel => {
+          window._qtClipboardBridge = channel.objects.clipboardBridge || null;
+          resolve(window._qtClipboardBridge);
+        });
+      };
+      if (window.QWebChannel) {
+        init();
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'qrc:///qtwebchannel/qwebchannel.js';
+      script.onload = init;
+      script.onerror = () => resolve(null);
+      document.head.appendChild(script);
+    });
+    return window._qtClipboardBridgePromise;
+  }
+  function legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok ? Promise.resolve() : Promise.reject(new Error('copy failed'));
   }
   function setupCopyButtons() {
     document.querySelectorAll('.code-copy-btn').forEach(btn => {
@@ -1224,17 +1283,17 @@ window._searchHL = {
         const wrapper = this.parentElement;
         const text = getCodeText(wrapper);
         if (text) {
-          navigator.clipboard.writeText(text).then(() => {
-            const origText = this.textContent;
-            this.textContent = 'Copied!';
+          const origText = this.textContent;
+          copyText(text).then(() => {
+            this.textContent = 'OK';
             this.style.color = '#58a6ff';
             setTimeout(() => {
               this.textContent = origText;
               this.style.color = '';
-            }, 1500);
-          }).catch(err => {
-            this.textContent = 'Failed';
-            setTimeout(() => { this.textContent = 'Copy'; }, 1500);
+            }, 900);
+          }).catch(() => {
+            this.style.color = '#f85149';
+            setTimeout(() => { this.style.color = ''; }, 1500);
           });
         }
       });
@@ -1282,6 +1341,18 @@ _SELECTION_INFO_JS = r"""
 """
 
 
+class ClipboardBridge(QObject):
+    path_copied = Signal(str)
+
+    @Slot(str, result=bool)
+    def copyText(self, text: str) -> bool:
+        if not text:
+            return False
+        QApplication.clipboard().setText(text)
+        self.path_copied.emit(text)
+        return True
+
+
 class PreviewWebView(QWebEngineView if HAS_WEBENGINE else QWidget):
     path_copied = Signal(str)
 
@@ -1294,6 +1365,12 @@ class PreviewWebView(QWebEngineView if HAS_WEBENGINE else QWidget):
         if HAS_WEBENGINE:
             # 设置深色背景避免加载时闪白
             self.page().setBackgroundColor(QColor("#0d1117"))
+            if HAS_WEBCHANNEL:
+                self._clipboard_bridge = ClipboardBridge(self)
+                self._clipboard_bridge.path_copied.connect(self.path_copied)
+                self._web_channel = QWebChannel(self)
+                self._web_channel.registerObject("clipboardBridge", self._clipboard_bridge)
+                self.page().setWebChannel(self._web_channel)
             # 通过 HTML 设置页面背景色
             self.setHtml(_EMPTY_HTML)
 
@@ -1623,11 +1700,14 @@ class PreviewPane(QWidget):
         html_str, _ = render_file(path)
         base_url = QUrl.fromLocalFile(str(path.parent) + "/")
         view.setHtml(html_str, base_url)
-        view.loadFinished.connect(
-            lambda ok: (view.page().runJavaScript("window.scrollTo(0,0);"),
-                        self._inject_search_js()) if ok else None,
-            Qt.ConnectionType.SingleShotConnection,
-        )
+
+        def on_loaded(ok):
+            if ok:
+                view.page().runJavaScript("window.scrollTo(0,0);")
+                # 延迟注入 JS，确保 DOM 完全渲染
+                QTimer.singleShot(100, self._inject_search_js)
+
+        view.loadFinished.connect(on_loaded, Qt.ConnectionType.SingleShotConnection)
 
     # ── Search ───────────────────────────────────────────────────────────────
 
