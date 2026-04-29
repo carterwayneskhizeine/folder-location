@@ -334,9 +334,7 @@ class PreviewTabBar(QTabBar):
         return buttons[-1] if forward else buttons[0]
 
     def tabSizeHint(self, index: int) -> QSize:
-        size = super().tabSizeHint(index)
-        size.setWidth(max(size.width(), 100))
-        return size
+        return super().tabSizeHint(index)
 
     def minimumSizeHint(self) -> QSize:
         size = super().minimumSizeHint()
@@ -361,7 +359,8 @@ class PreviewPane(QWidget):
         self._tab_bar.setDocumentMode(True)
         self._tab_bar.setExpanding(False)
         self._tab_bar.setUsesScrollButtons(True)
-        self._tab_bar.setElideMode(Qt.TextElideMode.ElideMiddle)
+        self._tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+        self._tab_bar.setMinimumWidth(0)
         self._tab_bar.currentChanged.connect(self._on_tab_changed)
         self._tab_bar.tabMoved.connect(self._on_tab_moved)
 
@@ -383,7 +382,7 @@ class PreviewPane(QWidget):
         self._tab_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
         self._tab_scrollbar.setObjectName("tabScrollBar")
         self._tab_scrollbar.setSingleStep(30)
-        self._tab_scrollbar.setFixedHeight(6)
+        self._tab_scrollbar.setFixedHeight(16)
         self._tab_scrollbar.hide()
         self._tab_scrollbar.valueChanged.connect(self._on_tab_scrollbar_moved)
         self._tab_bar.scrolled.connect(self._update_tab_scrollbar)

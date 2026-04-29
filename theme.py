@@ -100,11 +100,33 @@ QTabBar QToolButton::left-arrow, QTabBar QToolButton::right-arrow {{
 #addFolderBtn:hover {{ background: {BG_HOVER}; color: {FG}; }}
 #addFolderBtn:pressed {{ background: {BG_ACTIVE}; }}
 
-/* ── 文件夹标签页滚动条 ── */
-QScrollBar#tabScrollBar:horizontal {{ background: {BG}; height: 6px; margin: 0; border: none; }}
-QScrollBar#tabScrollBar::handle:horizontal {{ background: {BORDER}; border-radius: 3px; min-width: 24px; }}
-QScrollBar#tabScrollBar::handle:horizontal:hover {{ background: {FG_SOFT}; }}
-QScrollBar#tabScrollBar::add-line, QScrollBar#tabScrollBar::sub-line {{ width: 0; height: 0; }}
+/* ── 标签页横向滚动条（复古 Windows 长方形风格） ── */
+QScrollBar#tabScrollBar:horizontal {{
+    background: {BG_ELEV};
+    height: 16px;
+    margin: 0;
+    border-top: 1px solid {BORDER};
+}}
+QScrollBar#tabScrollBar::handle:horizontal {{
+    background: {BORDER};
+    border: 1px solid {FG_SOFT};
+    border-radius: 0px;
+    min-width: 32px;
+}}
+QScrollBar#tabScrollBar::handle:horizontal:hover {{
+    background: {FG_DIM};
+    border-color: {FG};
+}}
+QScrollBar#tabScrollBar::handle:horizontal:pressed {{
+    background: {FG};
+    border-color: {FG};
+}}
+QScrollBar#tabScrollBar::add-line:horizontal, QScrollBar#tabScrollBar::sub-line:horizontal {{
+    width: 0; height: 0;
+}}
+QScrollBar#tabScrollBar::add-page:horizontal, QScrollBar#tabScrollBar::sub-page:horizontal {{
+    background: {BG_ELEV};
+}}
 
 #tabCloseBtn {{
     background: transparent;

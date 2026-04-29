@@ -508,7 +508,7 @@ class FolderTabsPanel(QWidget):
         self._tab_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
         self._tab_scrollbar.setObjectName("tabScrollBar")
         self._tab_scrollbar.setSingleStep(30)
-        self._tab_scrollbar.setFixedHeight(6)
+        self._tab_scrollbar.setFixedHeight(16)
         self._tab_scrollbar.hide()
         self._tab_scrollbar.valueChanged.connect(self._on_tab_scrollbar_moved)
         self.tab_bar.scrolled.connect(self._update_tab_scrollbar)
