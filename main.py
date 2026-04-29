@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QTabBar, QSplitter, QFileDialog, QPlainTextEdit,
     QSystemTrayIcon, QMenu, QStackedWidget, QToolButton,
-    QProxyStyle, QStyle, QScrollArea,
+    QProxyStyle, QStyle, QScrollArea, QScrollBar,
 )
 from PySide6.QtCore import (
     Qt, QTimer, QEvent, Signal, QUrl, QSettings, QSize, QFileSystemWatcher,
@@ -139,6 +139,12 @@ QTabBar QToolButton::right-arrow {
 }
 #addFolderBtn:hover { background: #30363d; color: #c9d1d9; border-color: #30363d; }
 #addFolderBtn:pressed { background: #21262d; }
+
+/* ── Folder tab scrollbar ── */
+QScrollBar#tabScrollBar:horizontal { background: #161b22; height: 8px; margin: 0; border: none; }
+QScrollBar#tabScrollBar::handle:horizontal { background: #30363d; border-radius: 4px; min-width: 24px; }
+QScrollBar#tabScrollBar::handle:horizontal:hover { background: #484f58; }
+QScrollBar#tabScrollBar::add-line, QScrollBar#tabScrollBar::sub-line { width: 0; height: 0; }
 
 #tabCloseBtn {
     background: transparent;
@@ -1087,6 +1093,8 @@ _ADD_FOLDER_TAB = "__add_folder_tab__"
 
 
 class FolderTabBar(QTabBar):
+    scrolled = Signal()  # emitted whenever scroll state may have changed
+
     def wheelEvent(self, event) -> None:
         delta = event.angleDelta().x() or event.angleDelta().y()
         if delta == 0:
@@ -1101,7 +1109,16 @@ class FolderTabBar(QTabBar):
             if button is None or not button.isEnabled():
                 break
             button.click()
+        QTimer.singleShot(0, self.scrolled.emit)
         event.accept()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self.scrolled.emit)
+
+    def tabLayoutChange(self) -> None:
+        super().tabLayoutChange()
+        QTimer.singleShot(0, self.scrolled.emit)
 
     def _scroll_button(self, forward: bool) -> QToolButton | None:
         buttons = [b for b in self.findChildren(QToolButton) if b.isVisible()]
@@ -1165,6 +1182,14 @@ class FolderTabsPanel(QWidget):
         self.tab_bar.setMinimumWidth(0)
         header_layout.addWidget(self.tab_bar, 1)
 
+        self._tab_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
+        self._tab_scrollbar.setObjectName("tabScrollBar")
+        self._tab_scrollbar.setSingleStep(30)
+        self._tab_scrollbar.setFixedHeight(8)
+        self._tab_scrollbar.hide()
+        self._tab_scrollbar.valueChanged.connect(self._on_tab_scrollbar_moved)
+        self.tab_bar.scrolled.connect(self._update_tab_scrollbar)
+
         self.stack = QStackedWidget()
         self.stack.setMinimumWidth(0)
         self._tab_widgets: list[FolderTree] = []
@@ -1172,6 +1197,7 @@ class FolderTabsPanel(QWidget):
         self._add_control_tabs()
 
         layout.addWidget(header)
+        layout.addWidget(self._tab_scrollbar)
         layout.addWidget(self.stack, 1)
         self._last_dir = str(Path.home())
 
@@ -1200,12 +1226,51 @@ class FolderTabsPanel(QWidget):
     def _is_add_tab(self, idx: int) -> bool:
         return idx >= 0 and self.tab_bar.tabData(idx) == _ADD_FOLDER_TAB
 
+    # ── Tab scrollbar sync ────────────────────────────────────────────────────
+
+    def _tab_scroll_offset(self) -> int:
+        if self.tab_bar.count() == 0:
+            return 0
+        return max(0, -self.tab_bar.tabRect(0).x())
+
+    def _update_tab_scrollbar(self) -> None:
+        total_w = sum(self.tab_bar.tabRect(i).width() for i in range(self.tab_bar.count()))
+        visible_w = self.tab_bar.width()
+        max_scroll = max(0, total_w - visible_w)
+
+        self._tab_scrollbar.blockSignals(True)
+        self._tab_scrollbar.setRange(0, max_scroll)
+        self._tab_scrollbar.setPageStep(visible_w)
+        self._tab_scrollbar.setValue(self._tab_scroll_offset())
+        self._tab_scrollbar.blockSignals(False)
+        self._tab_scrollbar.setVisible(max_scroll > 0)
+
+    def _on_tab_scrollbar_moved(self, value: int) -> None:
+        for _ in range(100):
+            current = self._tab_scroll_offset()
+            delta = value - current
+            if abs(delta) <= 3:
+                break
+            forward = delta > 0
+            buttons = sorted(
+                [b for b in self.tab_bar.findChildren(QToolButton)],
+                key=lambda b: b.geometry().x(),
+            )
+            btn = (buttons[-1] if forward else buttons[0]) if buttons else None
+            if btn is None or not btn.isEnabled():
+                break
+            prev = current
+            btn.click()
+            if self._tab_scroll_offset() == prev:
+                break
+
     def _on_current_changed(self, idx: int) -> None:
         if self._is_add_tab(idx):
             return
         if 0 <= idx < self.stack.count():
             self._last_real_index = idx
             self.stack.setCurrentIndex(idx)
+        QTimer.singleShot(0, self._update_tab_scrollbar)
 
     def _on_tab_clicked(self, idx: int) -> None:
         if self._is_add_tab(idx):
