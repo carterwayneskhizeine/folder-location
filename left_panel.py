@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 
 from tree import FolderTabsPanel
 from history import HistoryPanel
+from theme import _sidebar_icon
 
 
 class LeftPanel(QWidget):
@@ -27,9 +28,12 @@ class LeftPanel(QWidget):
         sl.setSpacing(6)
         sl.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+        self._tree_icons = _sidebar_icon("FOLDER")
+        self._hist_icons = _sidebar_icon("HISTORY")
+
         self._tree_btn = QToolButton()
         self._tree_btn.setObjectName("sidebarBtn")
-        self._tree_btn.setText("📂")
+        self._tree_btn.setIcon(self._tree_icons[1])  # black icon on white bg
         self._tree_btn.setToolTip("文件树")
         self._tree_btn.setCheckable(True)
         self._tree_btn.setChecked(True)
@@ -39,7 +43,7 @@ class LeftPanel(QWidget):
 
         self._hist_btn = QToolButton()
         self._hist_btn.setObjectName("sidebarBtn")
-        self._hist_btn.setText("🕐")
+        self._hist_btn.setIcon(self._hist_icons[0])  # white icon on dark bg
         self._hist_btn.setToolTip("更改历史")
         self._hist_btn.setCheckable(True)
         self._hist_btn.setFixedSize(32, 32)
@@ -69,12 +73,16 @@ class LeftPanel(QWidget):
     def _show_tree(self) -> None:
         self._stack.setCurrentIndex(0)
         self._tree_btn.setChecked(True)
+        self._tree_btn.setIcon(self._tree_icons[1])   # black on white
         self._hist_btn.setChecked(False)
+        self._hist_btn.setIcon(self._hist_icons[0])    # white on dark
 
     def _show_history(self) -> None:
         self._stack.setCurrentIndex(1)
         self._tree_btn.setChecked(False)
+        self._tree_btn.setIcon(self._tree_icons[0])    # white on dark
         self._hist_btn.setChecked(True)
+        self._hist_btn.setIcon(self._hist_icons[1])    # black on white
 
     @property
     def _last_dir(self) -> str:

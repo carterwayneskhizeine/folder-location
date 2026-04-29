@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
-from theme import _file_icon
+from theme import _file_icon, _sidebar_icon
 
 
 class HistoryRowWidget(QWidget):
@@ -45,8 +45,16 @@ class HistoryRowWidget(QWidget):
         layout.addWidget(self._time_lbl)
 
         p = Path(path)
-        icon = _file_icon(p.name) if not p.suffix == "" or p.is_file() else "📁  "
-        name_lbl = QLabel(icon + p.name)
+        if p.suffix == "" and p.is_dir():
+            name_icon = _sidebar_icon("FOLDER", 16)[0]
+        else:
+            name_icon = _file_icon(p.name)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(name_icon.pixmap(16, 16))
+        icon_lbl.setFixedSize(16, 16)
+        layout.addWidget(icon_lbl)
+
+        name_lbl = QLabel(p.name)
         name_lbl.setObjectName("historyName")
         name_lbl.setToolTip(path)
         if event_type == "deleted":

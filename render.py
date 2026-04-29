@@ -32,10 +32,24 @@ _HTML_TPL = """<!DOCTYPE html>
 <style>{style}</style></head><body>{body}</body></html>"""
 
 _SCROLLBAR_CSS = """
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #000000; }
-::-webkit-scrollbar-thumb { background: #2f3336; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #536471; }
+::-webkit-scrollbar { width: 16px; height: 16px; }
+::-webkit-scrollbar-track { background: #16181c; }
+::-webkit-scrollbar-track-piece:start { background: #16181c; }
+::-webkit-scrollbar-thumb {
+    background: #2f3336;
+    border: 1px solid #536471;
+    border-radius: 0px;
+    min-height: 32px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #71767b;
+    border-color: #e7e9ea;
+}
+::-webkit-scrollbar-thumb:active {
+    background: #e7e9ea;
+    border-color: #e7e9ea;
+}
+::-webkit-scrollbar-corner { background: #16181c; }
 """
 
 _BASE_CSS = (
@@ -62,10 +76,10 @@ code {
 }
 pre {
     background: #16181c; border: 1px solid #2f3336; border-radius: 10px;
-    padding: 16px; overflow-x: auto; line-height: 1.5; margin: 0 0 14px;
+    padding: 16px; overflow-x: visible; line-height: 1.5; margin: 0 0 14px;
 }
 pre code { background:none; border:none; padding:0; color:#e7e9ea; font-size:100%; }
-.codehilite { background: #16181c !important; border: 1px solid #2f3336; border-radius: 10px; overflow-x: auto; margin: 0; }
+.codehilite { background: #16181c !important; border: 1px solid #2f3336; border-radius: 10px; overflow-x: visible; margin: 0; }
 .codehilite pre { margin:0; padding:14px 16px; background:transparent; }
 .code-wrapper { position: relative; margin-bottom: 14px; }
 .code-copy-btn {
@@ -91,9 +105,9 @@ li { margin-bottom:4px; }
 _CODE_CSS = _BASE_CSS + """
 body { padding: 0; font-family: "JetBrains Mono","Consolas","Courier New",monospace; font-size: 13px; }
 .code-wrapper { position: relative; margin-bottom: 14px; }
-.highlight { background: #000000 !important; margin: 0; }
-.highlight pre { margin:0; padding:18px 20px; line-height:1.55; overflow-x:auto; }
-table.highlighttable { width:100%; border-collapse:collapse; table-layout:fixed; }
+.highlight { background: #000000 !important; margin: 0; overflow-x: visible; }
+.highlight pre { margin:0; padding:18px 20px; line-height:1.55; overflow-x:visible; }
+table.highlighttable { width:auto; border-collapse:collapse; }
 td.linenos {
     background: #0a0a0a; width: 52px; vertical-align:top;
     border-right: 1px solid #2f3336; padding: 0;

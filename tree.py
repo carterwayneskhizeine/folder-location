@@ -12,7 +12,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QShortcut, QKeySequence
 
-from theme import _file_icon, HiddenTabScrollButtonStyle
+from theme import _file_icon, _sidebar_icon, HiddenTabScrollButtonStyle
 
 
 _DIR_ROLE   = Qt.ItemDataRole.UserRole
@@ -173,7 +173,8 @@ class FolderTree(QTreeWidget):
         self._reset_watcher()
 
         root = QTreeWidgetItem(self)
-        root.setText(0, "📂  " + folder.name)
+        root.setText(0, "  " + folder.name)
+        root.setIcon(0, _sidebar_icon("FOLDER")[0])
         root.setData(0, _DIR_ROLE, display_root)
         root.setData(0, _IS_DIR, True)
         root.setData(0, _PATH_ROLE, folder)
@@ -202,7 +203,8 @@ class FolderTree(QTreeWidget):
             child.setData(0, _PATH_ROLE, entry)
             if entry.is_dir():
                 self._watch_dir(entry)
-                child.setText(0, "📁  " + entry.name)
+                child.setText(0, "  " + entry.name)
+                child.setIcon(0, _sidebar_icon("FOLDER")[0])
                 child.setData(0, _IS_DIR, True)
                 child.setForeground(0, QColor("#e7e9ea"))
                 try:
@@ -212,7 +214,8 @@ class FolderTree(QTreeWidget):
                     pass
             else:
                 self._watch_file(entry)
-                child.setText(0, _file_icon(entry.name) + entry.name)
+                child.setText(0, "  " + entry.name)
+                child.setIcon(0, _file_icon(entry.name))
                 child.setForeground(0, QColor("#e7e9ea"))
 
     def _on_expanded(self, item: QTreeWidgetItem) -> None:
@@ -304,7 +307,8 @@ class FolderTree(QTreeWidget):
                 return
             self._root_exists = False
             item.takeChildren()
-            item.setText(0, "📂  " + folder.name + "  (已删除)")
+            item.setText(0, "  " + folder.name + "  (已删除)")
+            item.setIcon(0, _sidebar_icon("FOLDER_X")[0])
             item.setForeground(0, QColor("#f4212e"))
             self.folder_changed.emit(disp or str(folder))
             return
@@ -325,7 +329,8 @@ class FolderTree(QTreeWidget):
 
         item.takeChildren()
         if item.parent() is None:
-            item.setText(0, "📂  " + folder.name)
+            item.setText(0, "  " + folder.name)
+            item.setIcon(0, _sidebar_icon("FOLDER")[0])
             item.setForeground(0, QColor("#ffffff"))
         self._fill(item, folder, disp)
 

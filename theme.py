@@ -4,8 +4,14 @@ import ctypes
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QWidget, QProxyStyle, QStyle
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette, QIcon
+from PySide6.QtCore import Qt, QByteArray
+from PySide6.QtGui import QColor, QPalette, QIcon, QPixmap, QImage
+
+try:
+    from pytablericons import TablerIcons, OutlineIcon
+    HAS_TABLER = True
+except ImportError:
+    HAS_TABLER = False
 
 
 # ── 调色板 ────────────────────────────────────────────────────────────────────
@@ -56,6 +62,8 @@ QSplitter::handle:vertical   {{ background: {BORDER_SOFT}; height: 1px; }}
 #folderTabsHeader {{
     background: {BG};
     border-bottom: 1px solid {BORDER_SOFT};
+    min-height: 36px;
+    max-height: 36px;
 }}
 QTabBar {{ background: {BG}; }}
 QTabBar::tab {{
@@ -92,9 +100,9 @@ QTabBar QToolButton::left-arrow, QTabBar QToolButton::right-arrow {{
     color: {FG_DIM};
     font-size: 18px;
     font-weight: 500;
-    padding: 0 12px;
-    margin: 4px 6px;
-    min-height: 28px;
+    padding: 0 10px;
+    margin: 0 4px;
+    max-height: 28px;
     min-width: 28px;
 }}
 #addFolderBtn:hover {{ background: {BG_HOVER}; color: {FG}; }}
@@ -171,6 +179,8 @@ QTreeWidget::branch {{ background: {BG}; }}
 #previewHeader {{
     background: {BG};
     border-bottom: 1px solid {BORDER_SOFT};
+    min-height: 36px;
+    max-height: 36px;
 }}
 
 /* ── 浏览器 ── */
@@ -263,14 +273,59 @@ QPlainTextEdit {{
     padding: 12px;
 }}
 
-/* ── 通用滚动条 ── */
-QScrollBar:vertical   {{ background: {BG}; width: 8px;  margin: 0; }}
-QScrollBar:horizontal {{ background: {BG}; height: 8px; margin: 0; }}
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
-    background: {BORDER}; border-radius: 4px; min-height: 24px; min-width: 24px;
+/* ── 通用滚动条（复古 Windows 长方形风格） ── */
+QScrollBar:vertical {{
+    background: {BG_ELEV};
+    width: 16px;
+    margin: 0;
+    border-left: 1px solid {BORDER};
 }}
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background: {FG_SOFT}; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar::handle:vertical {{
+    background: {BORDER};
+    border: 1px solid {FG_SOFT};
+    border-radius: 0px;
+    min-height: 32px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {FG_DIM};
+    border-color: {FG};
+}}
+QScrollBar::handle:vertical:pressed {{
+    background: {FG};
+    border-color: {FG};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    width: 0; height: 0;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: {BG_ELEV};
+}}
+QScrollBar:horizontal {{
+    background: {BG_ELEV};
+    height: 16px;
+    margin: 0;
+    border-top: 1px solid {BORDER};
+}}
+QScrollBar::handle:horizontal {{
+    background: {BORDER};
+    border: 1px solid {FG_SOFT};
+    border-radius: 0px;
+    min-width: 32px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {FG_DIM};
+    border-color: {FG};
+}}
+QScrollBar::handle:horizontal:pressed {{
+    background: {FG};
+    border-color: {FG};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0; height: 0;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: {BG_ELEV};
+}}
 
 /* ── 侧边栏 ── */
 #sidebarStrip {{
@@ -334,29 +389,88 @@ QScrollArea#historyScroll {{ border: none; background: transparent; }}
 # ── 文件图标 ──────────────────────────────────────────────────────────────────
 
 _FILE_ICONS: dict[str, str] = {
-    "js": "📜", "ts": "📘", "jsx": "⚛", "tsx": "⚛",
-    "py": "🐍", "rb": "💎", "go": "🔵", "rs": "🦀",
-    "java": "☕", "c": "⚙", "cpp": "⚙", "h": "⚙", "cs": "⚙",
-    "php": "🐘", "swift": "🍎", "kt": "🟣",
-    "html": "🌐", "htm": "🌐", "css": "🎨", "scss": "🎨", "less": "🎨",
-    "json": "📋", "jsonc": "📋", "yaml": "📋", "yml": "📋",
-    "toml": "📋", "xml": "📋", "csv": "📊", "sql": "🗄",
-    "md": "📝", "mdx": "📝", "txt": "📄", "rst": "📄", "pdf": "📕",
-    "png": "🖼", "jpg": "🖼", "jpeg": "🖼", "gif": "🖼",
-    "svg": "🖼", "ico": "🖼", "webp": "🖼",
-    "zip": "📦", "tar": "📦", "gz": "📦", "rar": "📦", "7z": "📦",
-    "sh": "⚙", "ps1": "⚙", "bat": "⚙", "cmd": "⚙",
-    "env": "🔑", "lock": "🔒", "db": "🗄", "sqlite": "🗄",
-    "mp4": "🎬", "mp3": "🎵", "wav": "🎵",
-    "dockerfile": "🐳",
+    "js": "FILE_TYPE_JS", "ts": "FILE_TYPE_TS", "jsx": "FILE_TYPE_JSX", "tsx": "FILE_TYPE_TSX",
+    "py": "FILE_CODE_2", "rb": "FILE_CODE_2", "go": "FILE_CODE_2", "rs": "FILE_CODE_2",
+    "java": "FILE_CODE_2", "c": "FILE_CODE_2", "cpp": "FILE_CODE_2", "h": "FILE_CODE_2", "cs": "FILE_CODE_2",
+    "php": "FILE_CODE_2", "swift": "FILE_CODE_2", "kt": "FILE_CODE_2",
+    "html": "FILE_TYPE_HTML", "htm": "FILE_TYPE_HTML", "css": "FILE_TYPE_CSS", "scss": "FILE_TYPE_CSS", "less": "FILE_TYPE_CSS",
+    "json": "FILE_CODE_2", "jsonc": "FILE_CODE_2", "yaml": "FILE_CODE_2", "yml": "FILE_CODE_2",
+    "toml": "FILE_CODE_2", "xml": "FILE_CODE_2", "csv": "FILE_TYPE_CSV", "sql": "DATABASE",
+    "md": "FILE_TEXT", "mdx": "FILE_TEXT", "txt": "FILE_TYPE_TXT", "rst": "FILE_TEXT", "pdf": "FILE_TYPE_PDF",
+    "png": "FILE_TYPE_PNG", "jpg": "FILE_TYPE_JPG", "jpeg": "FILE_TYPE_JPG", "gif": "FILE_TYPE_JPG",
+    "svg": "FILE_TYPE_SVG", "ico": "FILE", "webp": "FILE_TYPE_PNG",
+    "zip": "FILE_TYPE_ZIP", "tar": "FILE_TYPE_ZIP", "gz": "FILE_TYPE_ZIP", "rar": "FILE_TYPE_ZIP", "7z": "FILE_TYPE_ZIP",
+    "sh": "FILE_CODE_2", "ps1": "FILE_CODE_2", "bat": "FILE_CODE_2", "cmd": "FILE_CODE_2",
+    "env": "LOCK", "lock": "LOCK", "db": "DATABASE", "sqlite": "DATABASE",
+    "mp4": "FILE_MUSIC", "mp3": "FILE_MUSIC", "wav": "FILE_MUSIC",
+    "dockerfile": "BRAND_DOCKER",
 }
 
+_ICON_CACHE: dict[str, QIcon] = {}
 
-def _file_icon(name: str) -> str:
+
+def _tabler_to_qicon(icon_name: str, size: int = 16) -> QIcon:
+    key = f"{icon_name}_{size}"
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    if not HAS_TABLER:
+        _ICON_CACHE[key] = QIcon()
+        return QIcon()
+    member = getattr(OutlineIcon, icon_name, None)
+    if member is None:
+        _ICON_CACHE[key] = QIcon()
+        return QIcon()
+    try:
+        # White version (normal / unchecked)
+        pil_w = TablerIcons.load(member, size=size, color="#e7e9ea")
+        rgba_w = pil_w.convert("RGBA").tobytes()
+        qimg_w = QImage(rgba_w, size, size, size * 4, QImage.Format.Format_RGBA8888).copy()
+        pm_w = QPixmap.fromImage(qimg_w)
+
+        # Black version (checked — white background needs dark icon)
+        pil_b = TablerIcons.load(member, size=size, color="#000000")
+        rgba_b = pil_b.convert("RGBA").tobytes()
+        qimg_b = QImage(rgba_b, size, size, size * 4, QImage.Format.Format_RGBA8888).copy()
+        pm_b = QPixmap.fromImage(qimg_b)
+
+        icon = QIcon()
+        icon.addPixmap(pm_w, QIcon.Mode.Normal, QIcon.State.Off)
+        icon.addPixmap(pm_w, QIcon.Mode.Normal, QIcon.State.On)   # fallback
+        icon.addPixmap(pm_b, QIcon.Mode.Selected, QIcon.State.On)
+        icon.addPixmap(pm_b, QIcon.Mode.Active, QIcon.State.On)
+        _ICON_CACHE[key] = icon
+        return icon
+    except Exception:
+        _ICON_CACHE[key] = QIcon()
+        return QIcon()
+
+
+def _file_icon(name: str) -> QIcon:
     if name.startswith("."):
-        return "⚙  "
+        return _tabler_to_qicon("SETTINGS", 16)
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    return _FILE_ICONS.get(ext, "📄") + "  "
+    icon_name = _FILE_ICONS.get(ext, "FILE")
+    return _tabler_to_qicon(icon_name, 16)
+
+
+def _sidebar_icon(icon_name: str, size: int = 20) -> tuple[QIcon, QIcon]:
+    """Return (icon_white, icon_black) for unchecked / checked states."""
+    if not HAS_TABLER:
+        return QIcon(), QIcon()
+    member = getattr(OutlineIcon, icon_name, None)
+    if member is None:
+        return QIcon(), QIcon()
+
+    def _make(color: str) -> QIcon:
+        pil = TablerIcons.load(member, size=size, color=color)
+        rgba = pil.convert("RGBA").tobytes()
+        qimg = QImage(rgba, size, size, size * 4, QImage.Format.Format_RGBA8888).copy()
+        return QIcon(QPixmap.fromImage(qimg))
+
+    try:
+        return _make("#e7e9ea"), _make("#000000")
+    except Exception:
+        return QIcon(), QIcon()
 
 
 # ── 图标加载 ──────────────────────────────────────────────────────────────────
