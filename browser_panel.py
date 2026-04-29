@@ -144,6 +144,7 @@ class BrowserPanel(QWidget):
         self._url_input.setObjectName("browserUrlInput")
         self._url_input.setClearButtonEnabled(True)
         self._url_input.setPlaceholderText("输入网址或搜索内容")
+        self._url_input.setFixedHeight(28)
         self._url_input.returnPressed.connect(self._load_from_input)
         toolbar_layout.addWidget(self._url_input, 1)
         QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self.focus_address_bar)
