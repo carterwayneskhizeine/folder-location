@@ -13,6 +13,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QShortcut, QKeySequence
 
 from theme import _file_icon, _sidebar_icon, HiddenTabScrollButtonStyle
+from settings_panel import format_copy_path as _format
 
 
 _DIR_ROLE   = Qt.ItemDataRole.UserRole
@@ -136,7 +137,7 @@ class FolderTree(QTreeWidget):
             return
         raw: str = item.data(0, _DIR_ROLE) or ""
         if raw:
-            text = "@" + raw.replace("\\", "/")
+            text = _format(raw)
             QApplication.clipboard().setText(text)
             self.path_copied.emit(text)
             self._copy_btn.setText("OK")

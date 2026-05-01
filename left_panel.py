@@ -1,4 +1,4 @@
-"""左侧侧边栏：图标条 + 文件树/历史 切换。"""
+"""左侧侧边栏：图标条 + 文件树/历史/设置 切换。"""
 from pathlib import Path
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QToolButton
@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 
 from tree import FolderTabsPanel
 from history import HistoryPanel
+from settings_panel import SettingsPanel
 from theme import _sidebar_icon
 
 
@@ -30,6 +31,7 @@ class LeftPanel(QWidget):
 
         self._tree_icons = _sidebar_icon("FOLDER")
         self._hist_icons = _sidebar_icon("HISTORY")
+        self._set_icons = _sidebar_icon("ADJUSTMENTS")
 
         self._tree_btn = QToolButton()
         self._tree_btn.setObjectName("sidebarBtn")
@@ -53,11 +55,23 @@ class LeftPanel(QWidget):
         sl.addWidget(self._tree_btn)
         sl.addWidget(self._hist_btn)
 
+        self._set_btn = QToolButton()
+        self._set_btn.setObjectName("sidebarBtn")
+        self._set_btn.setIcon(self._set_icons[0])
+        self._set_btn.setToolTip("设置")
+        self._set_btn.setCheckable(True)
+        self._set_btn.setFixedSize(32, 32)
+        self._set_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._set_btn.clicked.connect(self._show_settings)
+        sl.addWidget(self._set_btn)
+
         self._stack = QStackedWidget()
         self.folder_panel = FolderTabsPanel()
         self.history_panel = HistoryPanel()
+        self.settings_panel = SettingsPanel()
         self._stack.addWidget(self.folder_panel)
         self._stack.addWidget(self.history_panel)
+        self._stack.addWidget(self.settings_panel)
 
         outer.addWidget(strip)
         outer.addWidget(self._stack, 1)
@@ -76,6 +90,8 @@ class LeftPanel(QWidget):
         self._tree_btn.setIcon(self._tree_icons[1])   # black on white
         self._hist_btn.setChecked(False)
         self._hist_btn.setIcon(self._hist_icons[0])    # white on dark
+        self._set_btn.setChecked(False)
+        self._set_btn.setIcon(self._set_icons[0])
 
     def _show_history(self) -> None:
         self._stack.setCurrentIndex(1)
@@ -83,6 +99,17 @@ class LeftPanel(QWidget):
         self._tree_btn.setIcon(self._tree_icons[0])    # white on dark
         self._hist_btn.setChecked(True)
         self._hist_btn.setIcon(self._hist_icons[1])    # black on white
+        self._set_btn.setChecked(False)
+        self._set_btn.setIcon(self._set_icons[0])
+
+    def _show_settings(self) -> None:
+        self._stack.setCurrentIndex(2)
+        self._tree_btn.setChecked(False)
+        self._tree_btn.setIcon(self._tree_icons[0])
+        self._hist_btn.setChecked(False)
+        self._hist_btn.setIcon(self._hist_icons[0])
+        self._set_btn.setChecked(True)
+        self._set_btn.setIcon(self._set_icons[1])
 
     @property
     def _last_dir(self) -> str:

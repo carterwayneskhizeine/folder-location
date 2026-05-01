@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl
 
+from settings_panel import format_copy_path as _format_path
+
 try:
     import markdown as _md
     HAS_MARKDOWN = True
@@ -186,7 +188,7 @@ def _normalize_selected_text(text: str) -> str:
 
 
 def _format_copy_path(path: Path, start_line, end_line, text: str) -> str:
-    path_text = path.as_posix()
+    path_text = _format_path(str(path))
     if start_line is not None:
         if end_line is None or end_line == start_line:
             path_text += f":{start_line}"

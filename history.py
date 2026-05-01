@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal
 
 from theme import _file_icon, _sidebar_icon
+from settings_panel import format_copy_path as _format
 
 
 class HistoryRowWidget(QWidget):
@@ -113,7 +114,7 @@ class HistoryRowWidget(QWidget):
         super().mousePressEvent(event)
 
     def _do_copy(self) -> None:
-        text = "@" + self._path.replace("\\", "/")
+        text = _format(self._path)
         QApplication.clipboard().setText(text)
         self.copy_clicked.emit(text)
         self._copy_btn.setText("OK")
