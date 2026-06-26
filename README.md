@@ -29,14 +29,27 @@
 - **复古滚动条**：标签页和内容区使用 16px 复古 Windows 长方形滚动条，预览区 WebKit 滚动条风格统一
 - **Windows 深色标题栏**：在 Windows 10/11 下使用 DWM 深色标题栏，并在窗口显示、激活和托盘恢复时重新应用
 - **系统托盘**：关闭窗口时最小化到托盘，单击托盘图标切换显示/隐藏，右键可退出
+- **Git 源代码管理**：侧边栏第 4 个面板，类似 VS Code Source Control
+  - **文件状态列表**：分组显示 Staged / Changes / Untracked，每行带 checkbox 暂存
+  - **Side-by-Side Diff**：点击文件右侧并排显示变更，绿色新增 / 红色删除，共享滚动条
+  - **逐文件暂存**：勾选 checkbox 自动 `git add`，取消勾选自动 `git reset`
+  - **Commit 流程**：多行消息框 + `Ctrl+Enter` 提交 + Discard 危险操作二次确认
+  - **Commit 历史**：切换到 History 标签，点击 commit 查看 stat 总览
+  - **多 Repo 支持**：顶部下拉/浏览，文件树切换自动同步
+  - **零依赖**：纯 `subprocess` 调 `git` CLI，不依赖 GitPython / unidiff
 
 ## 项目结构
 
 ```
 main.py             # 入口 + MainWindow
-left_panel.py       # 左侧侧边栏（图标条 + 文件树/历史/设置切换）
+left_panel.py       # 左侧侧边栏（图标条 + 文件树/历史/git/设置切换）
 tree.py             # 文件树 + 文件夹标签页
 history.py          # 文件更改历史面板
+git_backend.py      # Git CLI 封装（subprocess + 自解析）
+git_panel.py        # Git 面板主组件
+git_file_list.py    # 文件状态列表（分组 + checkbox）
+git_log_list.py     # Commit 历史列表
+diff_view.py        # Side-by-Side Diff 视图
 settings_panel.py   # 设置面板（复制路径格式）
 preview.py          # 右侧预览区（标签页 + 浏览器 + 搜索）
 browser_panel.py    # 内置浏览器面板
@@ -90,6 +103,14 @@ python main.py
 | 复制预览选区路径 | 在右侧预览区选中文本后右键点击 `Copy Path` |
 | 搜索预览内容 | 在右侧预览区按 `Ctrl+F` 打开搜索栏，`Enter` / `Shift+Enter` 跳转，`Esc` 关闭 |
 | 复制预览选区文本 | 在右侧预览区选中文本后右键点击 `Copy`，或按 `Ctrl+C` |
+| 打开 Git 面板 | 点击左侧分支图标（⎇） |
+| 切换 Git 视图 | 在 Git 面板顶部点 `Changes` / `History` |
+| 选择仓库 | Git 面板顶部下拉选择，或点击 📂 浏览 |
+| 暂存 / 取消暂存文件 | 在 Git 面板中勾选 / 取消 checkbox |
+| 查看 Diff | 点击 Git 面板中任意文件 |
+| 提交 | 在消息框输入消息后点 `Commit` 或按 `Ctrl+Enter` |
+| 放弃改动 | 点击 `Discard`，二次确认后丢弃工作区所有改动 |
+| 查看 Commit 历史 | Git 面板切到 `History`，点击任意 commit |
 
 ## 打包为 exe
 
