@@ -4,3 +4,12 @@ dist/
 build/
 *.spec
 .claude/
+.understand-anything/
+
+smoke_integration.py
+smoke_test_stage3.py
+smoke_test_stage4.py
+smoke_test_stage5.py
+smoke_test_stage6.py
+smoke_test_stage7.py
+test_git_backend.py
